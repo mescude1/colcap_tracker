@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GRUPOSURA — BVC Analysis Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --bg2:      #161b22;
+      --bg3:      #21262d;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --text2:    #8b949e;
+      --blue:     #58a6ff;
+      --green:    #3fb950;
+      --red:      #f85149;
+      --yellow:   #e3b341;
+      --purple:   #bc8cff;
+      --orange:   #ffa657;
+      --radius:   8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+
+    /* ─── Loading overlay ─── */
+    #loading {
+      position: fixed; inset: 0; background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; z-index: 1000; gap: 16px;
+    }
+    .spinner {
+      width: 44px; height: 44px; border: 3px solid var(--border);
+      border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Error banner ─── */
+    #data-banner {
+      background: #21262d; border: 1px solid var(--yellow); border-radius: var(--radius);
+      margin: 12px 20px; padding: 10px 16px; font-size: 12px; display: none;
+    }
+    #data-banner a { color: var(--blue); }
+
+    /* ─── Header ─── */
+    .header {
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+      padding: 18px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .ticker-badge {
+      background: var(--blue); color: #000; font-weight: 700; font-size: 11px;
+      padding: 3px 8px; border-radius: 4px; letter-spacing: 0.5px;
+    }
+    .company-name { font-size: 18px; font-weight: 700; }
+    .exchange-tag { font-size: 11px; color: var(--text2); margin-top: 2px; }
+    .live-price-wrap { text-align: right; }
+    #live-price { font-size: 28px; font-weight: 700; color: var(--text); }
+    #price-change { font-size: 14px; margin-top: 2px; }
+    #price-date { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+    /* ─── Key Metrics ─── */
+    .metrics-section { padding: 16px 24px; }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .metric-card {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px;
+    }
+    .metric-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .metric-value { font-size: 18px; font-weight: 700; }
+    .metric-sub { font-size: 11px; color: var(--text2); margin-top: 3px; }
+
+    /* ─── Tabs ─── */
+    .tabs-bar {
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 0; padding: 0 24px; background: var(--bg2);
+    }
+    .tab-btn {
+      padding: 12px 20px; border: none; background: none; color: var(--text2);
+      font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent;
+      transition: color 0.2s; margin-bottom: -1px;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+
+    /* ─── Tab Content ─── */
+    .tab-pane { display: none; padding: 20px 24px; }
+    .tab-pane.active { display: block; }
+
+    /* ─── Charts ─── */
+    .chart-card {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; margin-bottom: 14px;
+    }
+    .chart-title {
+      font-size: 13px; font-weight: 600; color: var(--text2);
+      margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+
+    /* ─── Fundamentals table ─── */
+    .fund-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fund-table th {
+      text-align: left; padding: 8px 12px; color: var(--text2);
+      font-weight: 600; border-bottom: 1px solid var(--border); font-size: 11px;
+    }
+    .fund-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .fund-table tr:last-child td { border-bottom: none; }
+    .fund-table .pos { color: var(--green); }
+    .fund-table .neg { color: var(--red); }
+
+    /* ─── Segment cards ─── */
+    .segment-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    @media (max-width: 700px) { .segment-grid { grid-template-columns: 1fr; } }
+    .segment-card {
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px;
+    }
+    .segment-name { font-size: 14px; font-weight: 700; margin-bottom: 10px; color: var(--blue); }
+    .seg-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .seg-row:last-child { border-bottom: none; }
+    .seg-key { color: var(--text2); font-size: 12px; }
+    .seg-val { font-weight: 600; font-size: 12px; }
+
+    /* ─── Info note ─── */
+    .info-note {
+      background: #21262d; border-left: 3px solid var(--blue);
+      padding: 10px 14px; border-radius: 0 var(--radius) var(--radius) 0;
+      font-size: 12px; color: var(--text2); margin-bottom: 14px;
+    }
+    .info-note strong { color: var(--text); }
+
+    /* ─── No data state ─── */
+    .no-data-state {
+      background: var(--bg2); border: 1px dashed var(--border);
+      border-radius: var(--radius); padding: 40px; text-align: center;
+      color: var(--text2); margin-bottom: 14px;
+    }
+    .no-data-state .icon { font-size: 32px; margin-bottom: 10px; }
+    .no-data-state h3 { color: var(--text); margin-bottom: 8px; font-size: 16px; }
+    .no-data-state code {
+      background: var(--bg3); padding: 2px 6px; border-radius: 4px;
+      color: var(--orange); font-size: 12px;
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      border-top: 1px solid var(--border); padding: 16px 24px;
+      color: var(--text2); font-size: 11px; text-align: center;
+    }
+    footer a { color: var(--blue); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading">
+  <div class="spinner"></div>
+  <span style="color:var(--text2)">Loading GRUPOSURA data…</span>
+</div>
+
+<!-- Data status banner -->
+<div id="data-banner"></div>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <span class="ticker-badge">GRUPOSURA</span>
+    <div>
+      <div class="company-name">Grupo de Inversiones Suramericana S.A.</div>
+      <div class="exchange-tag">BVC · Colombia · COP · Financial Services Holding</div>
+    </div>
+  </div>
+  <div class="live-price-wrap">
+    <div id="live-price">—</div>
+    <div id="price-change">—</div>
+    <div id="price-date">—</div>
+  </div>
+</div>
+
+<!-- Key Metrics -->
+<div class="metrics-section">
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">P/E Ratio (TTM)</div>
+      <div class="metric-value" id="m-pe">7.61×</div>
+      <div class="metric-sub">Yahoo Finance</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Dividend / Share</div>
+      <div class="metric-value">COP 1,500</div>
+      <div class="metric-sub">FY2024 · +7.1% YoY</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Dividend Yield</div>
+      <div class="metric-value" id="m-yield">—</div>
+      <div class="metric-sub">Trailing</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">ROE Adjusted</div>
+      <div class="metric-value" style="color:var(--green)">12.3%</div>
+      <div class="metric-sub">FY2024 · +210 bps YoY</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">EPS Recurring</div>
+      <div class="metric-value">COP 6,144</div>
+      <div class="metric-sub">FY2024 · CAGR 18.6% (5yr)</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Revenue 2024</div>
+      <div class="metric-value">COP 37.2T</div>
+      <div class="metric-sub">+5.4% YoY · USD 9.14B</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Shares Outstanding</div>
+      <div class="metric-value">328M</div>
+      <div class="metric-sub">Market cap ~22.7T COP</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Credit Rating</div>
+      <div class="metric-value" style="color:var(--green)">AAA</div>
+      <div class="metric-sub">Fitch Colombia · F1+ ST</div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab Bar -->
+<div class="tabs-bar">
+  <button class="tab-btn active" onclick="switchTab('technical')">📈 Technical Analysis</button>
+  <button class="tab-btn" onclick="switchTab('returns')">📊 Returns &amp; Risk</button>
+  <button class="tab-btn" onclick="switchTab('fundamentals')">🏦 Fundamentals</button>
+</div>
+
+<!-- Tab: Technical Analysis -->
+<div id="tab-technical" class="tab-pane active">
+  <div class="info-note">
+    <strong>Live data</strong> is fetched from Yahoo Finance (ticker: <code>GRUPOSURA.CL</code>).
+    If charts are empty, check your internet connection or use <code>sura_tracker.py</code> to generate an offline version.
+  </div>
+  <div id="chart-candle-wrap" class="chart-card">
+    <div class="chart-title">Price · Bollinger Bands · Moving Averages (SMA 20/50/200)</div>
+    <div id="chart-candle" style="height:380px;"></div>
+  </div>
+  <div id="chart-volume-wrap" class="chart-card">
+    <div class="chart-title">Volume</div>
+    <div id="chart-volume" style="height:150px;"></div>
+  </div>
+  <div id="chart-rsi-wrap" class="chart-card">
+    <div class="chart-title">RSI (14) — Overbought > 70 / Oversold &lt; 30</div>
+    <div id="chart-rsi" style="height:180px;"></div>
+  </div>
+  <div id="chart-macd-wrap" class="chart-card">
+    <div class="chart-title">MACD (12, 26, 9)</div>
+    <div id="chart-macd" style="height:200px;"></div>
+  </div>
+  <div id="no-price-data" class="no-data-state" style="display:none;">
+    <div class="icon">📡</div>
+    <h3>Live Price Data Unavailable</h3>
+    <p style="margin-bottom:8px;">Could not reach Yahoo Finance API (CORS or network issue).</p>
+    <p>Run <code>sura_tracker.py</code> locally to generate an offline dashboard with full historical data.</p>
+  </div>
+</div>
+
+<!-- Tab: Returns & Risk -->
+<div id="tab-returns" class="tab-pane">
+  <div id="chart-cumret" class="chart-card">
+    <div class="chart-title">Cumulative Returns</div>
+    <div id="chart-cum" style="height:280px;"></div>
+  </div>
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">Return Distribution</div>
+      <div id="chart-hist" style="height:240px;"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Rolling 21-Day Annualised Volatility</div>
+      <div id="chart-vol" style="height:240px;"></div>
+    </div>
+  </div>
+  <div id="chart-heatmap-wrap" class="chart-card">
+    <div class="chart-title">Monthly Return Heatmap (%)</div>
+    <div id="chart-heatmap" style="height:260px;"></div>
+  </div>
+  <div id="no-returns-data" class="no-data-state" style="display:none;">
+    <div class="icon">📡</div>
+    <h3>Live Price Data Unavailable</h3>
+    <p>Returns analysis requires live or local price data. Run <code>sura_tracker.py</code>.</p>
+  </div>
+</div>
+
+<!-- Tab: Fundamentals -->
+<div id="tab-fundamentals" class="tab-pane">
+  <div class="info-note">
+    Data sourced from official Grupo SURA press releases and investor relations.
+    <strong>Revenue & Net Income in COP Trillion.</strong>
+  </div>
+
+  <!-- Income statement charts -->
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">Revenue vs Operating Income (COP Trillion)</div>
+      <div id="chart-revenue" style="height:260px;"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Net Income Adjusted (COP Trillion)</div>
+      <div id="chart-ni" style="height:260px;"></div>
+    </div>
+  </div>
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">ROE Adjusted (%)</div>
+      <div id="chart-roe" style="height:240px;"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Dividend Per Share (COP)</div>
+      <div id="chart-div" style="height:240px;"></div>
+    </div>
+  </div>
+
+  <!-- Key metrics table -->
+  <div class="chart-card">
+    <div class="chart-title">Annual Performance Summary</div>
+    <table class="fund-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>FY2022</th>
+          <th>FY2023</th>
+          <th>FY2024</th>
+          <th>YoY Δ</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Revenue (COP T)</td><td>—</td><td>35.5</td><td>37.2</td><td class="pos">+5.4%</td></tr>
+        <tr><td>Recurring Revenue (COP T)</td><td>—</td><td>—</td><td>29.3</td><td>—</td></tr>
+        <tr><td>Operating Income (COP T)</td><td>—</td><td>4.6 (record)</td><td>9.2</td><td class="pos">+100%</td></tr>
+        <tr><td>Net Income Adjusted (COP T)</td><td>2.1</td><td>2.3</td><td>2.4</td><td class="pos">+4.3%</td></tr>
+        <tr><td>Net Income Reported (COP T)</td><td>—</td><td>1.5</td><td>6.1</td><td class="pos">+294.5%</td></tr>
+        <tr><td>ROE Adjusted (%)</td><td>—</td><td>10.2%</td><td>12.3%</td><td class="pos">+210 bps</td></tr>
+        <tr><td>EPS Recurring (COP)</td><td>—</td><td>—</td><td>6,144</td><td>—</td></tr>
+        <tr><td>Dividend / Share (COP)</td><td>~1,280</td><td>1,400</td><td>1,500</td><td class="pos">+7.1%</td></tr>
+        <tr><td>Total Clients (M)</td><td>—</td><td>—</td><td>76.5</td><td>—</td></tr>
+        <tr><td>Countries of Operation</td><td>—</td><td>—</td><td>10</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Subsidiary performance -->
+  <div class="chart-card">
+    <div class="chart-title">Subsidiary Performance — FY2024</div>
+    <div class="segment-grid">
+      <div class="segment-card">
+        <div class="segment-name">SURA Asset Management</div>
+        <div class="seg-row"><span class="seg-key">Net Income</span><span class="seg-val">COP 885 B</span></div>
+        <div class="seg-row"><span class="seg-key">AUM</span><span class="seg-val">COP 719 Trillion</span></div>
+        <div class="seg-row"><span class="seg-key">Commission Income</span><span class="seg-val">COP 3.9 T (+12.1%)</span></div>
+        <div class="seg-row"><span class="seg-key">Operating Income</span><span class="seg-val">COP 1.8 T (+12.3%)</span></div>
+        <div class="seg-row"><span class="seg-key">ROE Adjusted</span><span class="seg-val" style="color:var(--green)">9.0%</span></div>
+        <div class="seg-row"><span class="seg-key">Clients</span><span class="seg-val">23.4M</span></div>
+        <div class="seg-row"><span class="seg-key">Markets</span><span class="seg-val">Mexico, Colombia, Chile+</span></div>
+      </div>
+      <div class="segment-card">
+        <div class="segment-name">Suramericana (Insurance)</div>
+        <div class="seg-row"><span class="seg-key">Net Income</span><span class="seg-val">COP 751 B (+65%)</span></div>
+        <div class="seg-row"><span class="seg-key">Written Premiums</span><span class="seg-val">COP 20.7 T (+6.6%)</span></div>
+        <div class="seg-row"><span class="seg-key">Life Premiums</span><span class="seg-val">+9.7% YoY</span></div>
+        <div class="seg-row"><span class="seg-key">Health Premiums</span><span class="seg-val">+6.6% YoY</span></div>
+        <div class="seg-row"><span class="seg-key">ROE Adjusted</span><span class="seg-val" style="color:var(--green)">13.1%</span></div>
+        <div class="seg-row"><span class="seg-key">Clients</span><span class="seg-val">20M+ in 7 countries</span></div>
+        <div class="seg-row"><span class="seg-key">Corporate Clients</span><span class="seg-val">600K companies</span></div>
+      </div>
+      <div class="segment-card">
+        <div class="segment-name">Strategic Investments</div>
+        <div class="seg-row"><span class="seg-key">Bancolombia (equity method)</span><span class="seg-val">COP 1.5 T income</span></div>
+        <div class="seg-row"><span class="seg-key">Grupo Argos (equity method)</span><span class="seg-val">COP 766 B income</span></div>
+        <div class="seg-row"><span class="seg-key">Nutresa</span><span class="seg-val">Transaction completed</span></div>
+        <div class="seg-row"><span class="seg-key">MSCI Inclusion</span><span class="seg-val">Nov 2025 (preferred share)</span></div>
+        <div class="seg-row"><span class="seg-key">Spin-off (Grupo Argos)</span><span class="seg-val">Completed 2025</span></div>
+        <div class="seg-row"><span class="seg-key">Sustainability</span><span class="seg-val">DJSI World · S&amp;P Yearbook</span></div>
+      </div>
+      <div class="segment-card">
+        <div class="segment-name">2025 Outlook</div>
+        <div class="seg-row"><span class="seg-key">Projected Cash Receipts</span><span class="seg-val">COP 2.2 T</span></div>
+        <div class="seg-row"><span class="seg-key">Portfolio Focus</span><span class="seg-val">Financial Services</span></div>
+        <div class="seg-row"><span class="seg-key">Dividend Growth Target</span><span class="seg-val">Sustained increase</span></div>
+        <div class="seg-row"><span class="seg-key">EPS CAGR (5yr)</span><span class="seg-val" style="color:var(--green)">18.6%</span></div>
+        <div class="seg-row"><span class="seg-key">ROE Target</span><span class="seg-val">&gt; Cost of Capital</span></div>
+        <div class="seg-row"><span class="seg-key">Rating Outlook</span><span class="seg-val">Stable (Fitch)</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Data sources: <a href="https://www.gruposura.com/en/investor-relations/" target="_blank">Grupo SURA IR</a> ·
+  <a href="https://finance.yahoo.com/quote/GRUPOSURA.CL/" target="_blank">Yahoo Finance</a> ·
+  Fundamental data as of FY2024 press release · Dashboard generated February 2026
+</footer>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════
+const TICKER      = 'GRUPOSURA.CL';
+const COMPANY     = 'Grupo de Inversiones Suramericana';
+const YAHOO_BASE  = 'https://query2.finance.yahoo.com';
+const YAHOO_BASE2 = 'https://query1.finance.yahoo.com';
+
+// Plotly dark layout base
+const BASE_LAYOUT = {
+  paper_bgcolor: '#161b22', plot_bgcolor: '#161b22',
+  font: { color: '#e6edf3', family: 'Segoe UI, system-ui, sans-serif', size: 12 },
+  margin: { l: 55, r: 20, t: 20, b: 40 },
+  xaxis: { gridcolor: '#30363d', zerolinecolor: '#30363d', showgrid: true },
+  yaxis: { gridcolor: '#30363d', zerolinecolor: '#30363d', showgrid: true },
+  legend: { bgcolor: '#21262d', bordercolor: '#30363d', borderwidth: 1 },
+  hovermode: 'x unified',
+  hoverlabel: { bgcolor: '#21262d', bordercolor: '#30363d', font: { color: '#e6edf3' } }
+};
+const BASE_CONFIG = { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['lasso2d','select2d'] };
+
+// ═══════════════════════════════════════════════════════
+// FUNDAMENTAL DATA (EMBEDDED)
+// ═══════════════════════════════════════════════════════
+const FUND = {
+  years:      ['2022', '2023', '2024'],
+  revenue:    [null,   35.5,   37.2],   // COP trillion
+  opIncome:   [null,    4.6,    9.2],   // COP trillion
+  netIncome:  [2.1,     2.3,    2.4],   // COP trillion (adjusted)
+  roe:        [null,   10.2,   12.3],   // %
+  dividend:   [1280,   1400,   1500],   // COP/share
+};
+
+// ═══════════════════════════════════════════════════════
+// TECHNICAL INDICATOR FUNCTIONS
+// ═══════════════════════════════════════════════════════
+function sma(arr, n) {
+  return arr.map((_, i) => {
+    if (i < n - 1) return null;
+    const slice = arr.slice(i - n + 1, i + 1);
+    const valid = slice.filter(x => x != null);
+    return valid.length === n ? valid.reduce((a, b) => a + b, 0) / n : null;
+  });
+}
+
+function ema(arr, span) {
+  const k = 2 / (span + 1);
+  const result = [arr[0]];
+  for (let i = 1; i < arr.length; i++) {
+    result.push(arr[i] != null ? arr[i] * k + result[i - 1] * (1 - k) : result[i - 1]);
+  }
+  return result;
+}
+
+function rsi(close, period = 14) {
+  const gains = [], losses = [];
+  for (let i = 1; i < close.length; i++) {
+    const d = close[i] - close[i - 1];
+    gains.push(d > 0 ? d : 0);
+    losses.push(d < 0 ? -d : 0);
+  }
+  const result = [null]; // align with close
+  let avgG = gains.slice(0, period).reduce((a, b) => a + b) / period;
+  let avgL = losses.slice(0, period).reduce((a, b) => a + b) / period;
+  for (let i = 0; i < gains.length; i++) {
+    if (i < period - 1) { result.push(null); continue; }
+    if (i > period - 1) {
+      avgG = (avgG * (period - 1) + gains[i]) / period;
+      avgL = (avgL * (period - 1) + losses[i]) / period;
+    }
+    result.push(avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL));
+  }
+  return result;
+}
+
+function macd(close, fast = 12, slow = 26, sig = 9) {
+  const emaF = ema(close, fast);
+  const emaS = ema(close, slow);
+  const macdLine = emaF.map((v, i) => v - emaS[i]);
+  const sigLine  = ema(macdLine, sig);
+  const hist     = macdLine.map((v, i) => v - sigLine[i]);
+  return { macdLine, sigLine, hist };
+}
+
+function bollingerBands(close, win = 20, k = 2) {
+  const mid = sma(close, win);
+  const upper = close.map((_, i) => {
+    if (i < win - 1) return null;
+    const sl = close.slice(i - win + 1, i + 1);
+    const m  = sl.reduce((a, b) => a + b) / win;
+    const sd = Math.sqrt(sl.reduce((a, b) => a + (b - m) ** 2, 0) / win);
+    return m + k * sd;
+  });
+  const lower = close.map((_, i) => {
+    if (i < win - 1) return null;
+    const sl = close.slice(i - win + 1, i + 1);
+    const m  = sl.reduce((a, b) => a + b) / win;
+    const sd = Math.sqrt(sl.reduce((a, b) => a + (b - m) ** 2, 0) / win);
+    return m - k * sd;
+  });
+  return { upper, mid, lower };
+}
+
+function dailyReturns(close) {
+  return close.map((v, i) => i === 0 ? null : (v - close[i - 1]) / close[i - 1]);
+}
+
+function cumReturns(rets) {
+  let cum = 1;
+  return rets.map(r => {
+    if (r == null) return null;
+    cum *= (1 + r);
+    return cum - 1;
+  });
+}
+
+function rollingVol(rets, win = 21) {
+  return rets.map((_, i) => {
+    if (i < win) return null;
+    const sl = rets.slice(i - win + 1, i + 1).filter(x => x != null);
+    if (sl.length < win) return null;
+    const mean = sl.reduce((a, b) => a + b) / sl.length;
+    const variance = sl.reduce((a, b) => a + (b - mean) ** 2, 0) / sl.length;
+    return Math.sqrt(variance * 252) * 100; // annualised %
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// DATA FETCHING
+// ═══════════════════════════════════════════════════════
+async function fetchChart(base) {
+  const url = `${base}/v8/finance/chart/${TICKER}?interval=1d&range=2y&includePrePost=false`;
+  const res = await fetch(url, { mode: 'cors' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  return json.chart.result[0];
+}
+
+async function fetchQuote(base) {
+  const url = `${base}/v10/finance/quoteSummary/${TICKER}?modules=financialData,defaultKeyStatistics,summaryDetail`;
+  const res = await fetch(url, { mode: 'cors' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()).quoteSummary.result[0];
+}
+
+// ═══════════════════════════════════════════════════════
+// CHART RENDERING
+// ═══════════════════════════════════════════════════════
+function renderTechnical(dates, ohlcv) {
+  const close  = ohlcv.close;
+  const open   = ohlcv.open;
+  const high   = ohlcv.high;
+  const low    = ohlcv.low;
+  const volume = ohlcv.volume;
+
+  const bb   = bollingerBands(close);
+  const sma20 = sma(close, 20);
+  const sma50 = sma(close, 50);
+  const sma200 = sma(close, 200);
+
+  // Candlestick chart
+  const candleTraces = [
+    { type: 'candlestick', x: dates, open, high, low, close,
+      name: 'GRUPOSURA', increasing: { line: { color: '#3fb950' } },
+      decreasing: { line: { color: '#f85149' } } },
+    { type: 'scatter', x: dates, y: bb.upper, name: 'BB Upper',
+      line: { color: '#8b949e', width: 1, dash: 'dot' }, fill: 'none' },
+    { type: 'scatter', x: dates, y: bb.lower, name: 'BB Lower',
+      line: { color: '#8b949e', width: 1, dash: 'dot' },
+      fill: 'tonexty', fillcolor: 'rgba(88,166,255,0.05)' },
+    { type: 'scatter', x: dates, y: bb.mid, name: 'BB Mid (SMA20)',
+      line: { color: '#ffa657', width: 1 } },
+    { type: 'scatter', x: dates, y: sma50, name: 'SMA50',
+      line: { color: '#58a6ff', width: 1.5 } },
+    { type: 'scatter', x: dates, y: sma200, name: 'SMA200',
+      line: { color: '#bc8cff', width: 1.5 } },
+  ];
+  const candleLayout = {
+    ...BASE_LAYOUT,
+    xaxis: { ...BASE_LAYOUT.xaxis, rangeslider: { visible: false } },
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'Price (COP)' },
+  };
+  Plotly.newPlot('chart-candle', candleTraces, candleLayout, BASE_CONFIG);
+
+  // Volume
+  const volColors = close.map((v, i) => i === 0 ? '#8b949e' : (v >= open[i] ? '#3fb95066' : '#f8514966'));
+  Plotly.newPlot('chart-volume',
+    [{ type: 'bar', x: dates, y: volume, name: 'Volume', marker: { color: volColors } }],
+    { ...BASE_LAYOUT, margin: { ...BASE_LAYOUT.margin, t: 10, b: 30 },
+      yaxis: { ...BASE_LAYOUT.yaxis, title: 'Volume' } },
+    BASE_CONFIG);
+
+  // RSI
+  const rsiVals = rsi(close, 14);
+  Plotly.newPlot('chart-rsi', [
+    { type: 'scatter', x: dates, y: rsiVals, name: 'RSI(14)',
+      line: { color: '#e3b341', width: 1.5 }, fill: 'none' },
+    { type: 'scatter', x: dates, y: dates.map(() => 70), name: 'Overbought',
+      line: { color: '#f85149', width: 1, dash: 'dash' } },
+    { type: 'scatter', x: dates, y: dates.map(() => 30), name: 'Oversold',
+      line: { color: '#3fb950', width: 1, dash: 'dash' } },
+  ], {
+    ...BASE_LAYOUT, margin: { ...BASE_LAYOUT.margin, t: 10, b: 30 },
+    yaxis: { ...BASE_LAYOUT.yaxis, range: [0, 100], title: 'RSI' }
+  }, BASE_CONFIG);
+
+  // MACD
+  const { macdLine, sigLine, hist } = macd(close);
+  const histColors = hist.map(v => v >= 0 ? '#3fb95066' : '#f8514966');
+  Plotly.newPlot('chart-macd', [
+    { type: 'bar', x: dates, y: hist, name: 'Histogram', marker: { color: histColors } },
+    { type: 'scatter', x: dates, y: macdLine, name: 'MACD', line: { color: '#58a6ff', width: 1.5 } },
+    { type: 'scatter', x: dates, y: sigLine, name: 'Signal', line: { color: '#ffa657', width: 1.5 } },
+  ], {
+    ...BASE_LAYOUT, margin: { ...BASE_LAYOUT.margin, t: 10, b: 30 },
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'MACD (COP)' }
+  }, BASE_CONFIG);
+}
+
+function renderReturns(dates, close) {
+  const rets = dailyReturns(close);
+  const cums  = cumReturns(rets);
+  const vol   = rollingVol(rets);
+
+  // Cumulative returns
+  Plotly.newPlot('chart-cum', [
+    { type: 'scatter', x: dates, y: cums.map(v => v != null ? (v * 100).toFixed(2) : null),
+      name: 'Cumulative Return', line: { color: '#58a6ff', width: 2 },
+      fill: 'tozeroy', fillcolor: 'rgba(88,166,255,0.1)' },
+  ], {
+    ...BASE_LAYOUT,
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'Return (%)' }
+  }, BASE_CONFIG);
+
+  // Distribution histogram
+  const validRets = rets.filter(r => r != null).map(r => (r * 100).toFixed(4));
+  Plotly.newPlot('chart-hist', [
+    { type: 'histogram', x: validRets, nbinsx: 50, name: 'Daily Return',
+      marker: { color: '#58a6ff88' } },
+  ], {
+    ...BASE_LAYOUT, margin: { ...BASE_LAYOUT.margin, t: 10, b: 30 },
+    xaxis: { ...BASE_LAYOUT.xaxis, title: 'Daily Return (%)' },
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'Frequency' }
+  }, BASE_CONFIG);
+
+  // Rolling volatility
+  Plotly.newPlot('chart-vol', [
+    { type: 'scatter', x: dates, y: vol.map(v => v != null ? v.toFixed(2) : null),
+      name: 'Annualised Vol (21d)',
+      line: { color: '#ffa657', width: 1.5 }, fill: 'tozeroy',
+      fillcolor: 'rgba(255,166,87,0.1)' },
+  ], {
+    ...BASE_LAYOUT, margin: { ...BASE_LAYOUT.margin, t: 10, b: 30 },
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'Volatility (%)' }
+  }, BASE_CONFIG);
+
+  // Monthly heatmap
+  const byMonth = {};
+  dates.forEach((d, i) => {
+    if (rets[i] == null) return;
+    const [yr, mo] = d.split('-');
+    const key = `${yr}-${mo}`;
+    if (!byMonth[key]) byMonth[key] = 0;
+    byMonth[key] = (1 + byMonth[key]) * (1 + rets[i]) - 1; // compound
+  });
+  const keys   = Object.keys(byMonth).sort();
+  const years  = [...new Set(keys.map(k => k.split('-')[0]))].sort();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const zMatrix = years.map(yr =>
+    months.map((_, mi) => {
+      const k = `${yr}-${String(mi + 1).padStart(2,'0')}`;
+      return byMonth[k] != null ? +(byMonth[k] * 100).toFixed(2) : null;
+    })
+  );
+  Plotly.newPlot('chart-heatmap', [{
+    type: 'heatmap', z: zMatrix, x: months, y: years,
+    colorscale: [
+      [0, '#f85149'], [0.4, '#161b22'], [0.5, '#161b22'], [1, '#3fb950']
+    ],
+    zmid: 0, text: zMatrix.map(r => r.map(v => v != null ? `${v.toFixed(1)}%` : '')),
+    texttemplate: '%{text}', showscale: true,
+    colorbar: { ticksuffix: '%', bgcolor: '#161b22', bordercolor: '#30363d' }
+  }], {
+    ...BASE_LAYOUT,
+    margin: { ...BASE_LAYOUT.margin, t: 10 },
+    yaxis: { ...BASE_LAYOUT.yaxis, title: '' }
+  }, BASE_CONFIG);
+}
+
+function renderFundamentals() {
+  const yrs = FUND.years;
+
+  // Revenue + Operating Income grouped bar
+  Plotly.newPlot('chart-revenue', [
+    { type: 'bar', x: yrs, y: FUND.revenue, name: 'Revenue',
+      marker: { color: '#58a6ff' },
+      text: FUND.revenue.map(v => v != null ? `${v}T` : '—'), textposition: 'outside' },
+    { type: 'bar', x: yrs, y: FUND.opIncome, name: 'Operating Income',
+      marker: { color: '#3fb950' },
+      text: FUND.opIncome.map(v => v != null ? `${v}T` : '—'), textposition: 'outside' },
+  ], {
+    ...BASE_LAYOUT, barmode: 'group',
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'COP Trillion' },
+    margin: { ...BASE_LAYOUT.margin, t: 10 }
+  }, BASE_CONFIG);
+
+  // Net income
+  Plotly.newPlot('chart-ni', [
+    { type: 'bar', x: yrs, y: FUND.netIncome, name: 'Net Income (Adjusted)',
+      marker: { color: yrs.map((_, i) => FUND.netIncome[i] != null
+        ? (FUND.netIncome[i] > (FUND.netIncome[i - 1] || 0) ? '#3fb950' : '#f85149')
+        : '#8b949e') },
+      text: FUND.netIncome.map(v => v != null ? `${v}T` : '—'), textposition: 'outside' },
+    { type: 'scatter', x: yrs, y: FUND.netIncome, name: 'Trend',
+      line: { color: '#e3b341', width: 2, dash: 'dot' }, mode: 'lines+markers' }
+  ], {
+    ...BASE_LAYOUT,
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'COP Trillion' },
+    margin: { ...BASE_LAYOUT.margin, t: 10 }
+  }, BASE_CONFIG);
+
+  // ROE
+  Plotly.newPlot('chart-roe', [
+    { type: 'bar', x: yrs, y: FUND.roe, name: 'ROE Adjusted (%)',
+      marker: { color: '#bc8cff' },
+      text: FUND.roe.map(v => v != null ? `${v}%` : '—'), textposition: 'outside' },
+    { type: 'scatter', x: yrs, y: FUND.roe, mode: 'lines+markers',
+      name: 'Trend', line: { color: '#e3b341', width: 2, dash: 'dot' } }
+  ], {
+    ...BASE_LAYOUT,
+    yaxis: { ...BASE_LAYOUT.yaxis, title: '%', range: [0, 15] },
+    margin: { ...BASE_LAYOUT.margin, t: 10 }
+  }, BASE_CONFIG);
+
+  // Dividend
+  Plotly.newPlot('chart-div', [
+    { type: 'bar', x: yrs, y: FUND.dividend, name: 'Dividend / Share (COP)',
+      marker: { color: '#ffa657' },
+      text: FUND.dividend.map(v => `COP ${v.toLocaleString()}`), textposition: 'outside' },
+  ], {
+    ...BASE_LAYOUT,
+    yaxis: { ...BASE_LAYOUT.yaxis, title: 'COP / share', range: [0, 1800] },
+    margin: { ...BASE_LAYOUT.margin, t: 10 }
+  }, BASE_CONFIG);
+}
+
+// ═══════════════════════════════════════════════════════
+// UPDATE HEADER WITH LIVE QUOTE
+// ═══════════════════════════════════════════════════════
+function updateHeader(quoteData) {
+  try {
+    const fd = quoteData.financialData;
+    const sd = quoteData.summaryDetail;
+    const ks = quoteData.defaultKeyStatistics;
+
+    const price = fd?.currentPrice?.raw ?? sd?.regularMarketPrice?.raw;
+    const prev  = sd?.previousClose?.raw;
+    const change = price && prev ? price - prev : null;
+    const pct    = change && prev ? change / prev * 100 : null;
+
+    if (price) {
+      document.getElementById('live-price').textContent = `COP ${price.toLocaleString('en-CO')}`;
+      document.getElementById('price-change').innerHTML =
+        pct != null
+          ? `<span style="color:${pct >= 0 ? '#3fb950' : '#f85149'}">` +
+            `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(2)}%` +
+            ` (${pct >= 0 ? '+' : ''}${change.toFixed(0)} COP)</span>`
+          : '';
+      document.getElementById('price-date').textContent = 'Live • Yahoo Finance';
+    }
+    if (ks?.trailingEps?.raw) {
+      const pe = price / ks.trailingEps.raw;
+      document.getElementById('m-pe').textContent = isFinite(pe) ? `${pe.toFixed(2)}×` : '7.61×';
+    }
+    const divYield = sd?.dividendYield?.raw;
+    if (divYield) {
+      document.getElementById('m-yield').textContent = `${(divYield * 100).toFixed(2)}%`;
+    }
+  } catch (e) { /* use defaults */ }
+}
+
+// ═══════════════════════════════════════════════════════
+// TAB NAVIGATION
+// ═══════════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  event.target.classList.add('active');
+  window.dispatchEvent(new Event('resize')); // re-render Plotly on tab switch
+}
+
+// ═══════════════════════════════════════════════════════
+// MAIN INIT
+// ═══════════════════════════════════════════════════════
+async function init() {
+  // Always render fundamentals immediately
+  renderFundamentals();
+
+  let priceLoaded = false;
+
+  // Try to fetch live data
+  const bases = [YAHOO_BASE, YAHOO_BASE2];
+  for (const base of bases) {
+    if (priceLoaded) break;
+    try {
+      const chartData = await fetchChart(base);
+      const timestamps = chartData.timestamp;
+      const q = chartData.indicators.quote[0];
+      const dates = timestamps.map(t => new Date(t * 1000).toISOString().split('T')[0]);
+
+      // Clean data (remove nulls, keep aligned)
+      const valid = dates.map((_, i) =>
+        q.close[i] != null && q.open[i] != null && q.high[i] != null && q.low[i] != null
+      );
+      const cleanDates  = dates.filter((_, i) => valid[i]);
+      const cleanClose  = q.close.filter((_, i) => valid[i]);
+      const cleanOpen   = q.open.filter((_, i) => valid[i]);
+      const cleanHigh   = q.high.filter((_, i) => valid[i]);
+      const cleanLow    = q.low.filter((_, i) => valid[i]);
+      const cleanVol    = q.volume.filter((_, i) => valid[i]);
+
+      const lastPrice = cleanClose[cleanClose.length - 1];
+      const lastDate  = cleanDates[cleanDates.length - 1];
+      const firstClose = cleanClose[0];
+
+      document.getElementById('live-price').textContent = `COP ${Math.round(lastPrice).toLocaleString('en-CO')}`;
+      document.getElementById('price-date').textContent = `Last trade: ${lastDate} · Yahoo Finance`;
+      const totalRet = (lastPrice / firstClose - 1) * 100;
+      document.getElementById('price-change').innerHTML =
+        `<span style="color:${totalRet >= 0 ? '#3fb950' : '#f85149'}">` +
+        `${totalRet >= 0 ? '▲' : '▼'} ${Math.abs(totalRet).toFixed(1)}% (2yr)` +
+        `</span>`;
+
+      renderTechnical(cleanDates, { close: cleanClose, open: cleanOpen, high: cleanHigh, low: cleanLow, volume: cleanVol });
+      renderReturns(cleanDates, cleanClose);
+      priceLoaded = true;
+
+      // Also try to get quote info
+      try {
+        const quoteData = await fetchQuote(base);
+        updateHeader(quoteData);
+      } catch (_) {}
+
+    } catch (err) {
+      console.warn(`Failed to fetch from ${base}:`, err.message);
+    }
+  }
+
+  if (!priceLoaded) {
+    // Show fallback state
+    const banner = document.getElementById('data-banner');
+    banner.style.display = 'block';
+    banner.innerHTML = `⚠️ <strong>Live price data unavailable</strong> — Could not reach Yahoo Finance API (network/CORS). ` +
+      `Fundamental data below is always available. ` +
+      `For full price history, run <code>sura_tracker.py</code> locally. ` +
+      `<a href="https://finance.yahoo.com/quote/GRUPOSURA.CL/" target="_blank">View on Yahoo Finance →</a>`;
+    document.getElementById('no-price-data').style.display = 'block';
+    document.getElementById('no-returns-data').style.display = 'block';
+    ['chart-candle-wrap','chart-volume-wrap','chart-rsi-wrap','chart-macd-wrap','chart-cumret','chart-heatmap-wrap'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    // Use reference data for header
+    document.getElementById('live-price').textContent = 'COP ~35,000';
+    document.getElementById('price-change').innerHTML = '<span style="color:#8b949e">Reference · check Yahoo Finance for live data</span>';
+    document.getElementById('price-date').textContent = 'ATH: COP 58,300 (Jun 2022) · Dec 2024: COP 55,160';
+    document.getElementById('m-yield').textContent = '4.15%';
+  }
+
+  // Hide loading overlay
+  document.getElementById('loading').style.display = 'none';
+}
+
+init();
+</script>
+</body>
+</html>

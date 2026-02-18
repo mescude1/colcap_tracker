@@ -1,0 +1,31 @@
+# ══════════════════════════════════════════════════════════
+# Custom RSS News Sources — BVC Dashboard (sources_example.txt)
+# ══════════════════════════════════════════════════════════
+#
+# Usage:
+#   python sura_tracker.py --sources sources_example.txt
+#   python sura_tracker.py --symbol ECOPETROL --sources my_sources.txt
+#
+# Format:
+#   One URL per line.
+#   Optional category label after a pipe character:  URL | Label
+#   Lines starting with # are ignored.
+#   Blank lines are ignored.
+# ──────────────────────────────────────────────────────────
+
+# ── Colombian Business / Economy ──────────────────────────
+https://www.larepublica.co/rss/economia | La República
+https://www.portafolio.co/rss.xml | Portafolio
+https://www.dinero.com/rss.xml | Dinero
+https://www.elcolombiano.com/rss/economia.xml | El Colombiano — Economía
+
+# ── Markets & Finance (general) ───────────────────────────
+# https://feeds.bloomberg.com/markets/news.rss | Bloomberg Markets
+# https://www.ft.com/rss/home/latin-america | Financial Times LatAm
+
+# ── Banco de la República / Policy ────────────────────────
+# https://www.banrep.gov.co/es/rss.xml | Banco de la República
+
+# ── Energy / Oil (useful when tracking ECOPETROL) ─────────
+# https://www.offshore-technology.com/feed/ | Offshore Technology
+# https://oilprice.com/rss/main | OilPrice.com
