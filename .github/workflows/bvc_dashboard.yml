@@ -1,0 +1,233 @@
+# ══════════════════════════════════════════════════════════════════
+# BVC Dashboard Generator — GitHub Actions Workflow
+# ══════════════════════════════════════════════════════════════════
+#
+# Triggered manually from the Actions tab (workflow_dispatch).
+# Generates an interactive HTML dashboard using sura_tracker.py,
+# deploys it to GitHub Pages, and prints the shareable URL.
+#
+# Setup (one-time):
+#   1. Push this repo to GitHub with sura_tracker.py at the root.
+#   2. Go to Settings → Pages → Source: Deploy from branch → gh-pages / root
+#   3. Run this workflow from Actions → "BVC Dashboard Generator" → Run workflow
+#
+# Shareable URL format:
+#   https://<your-username>.github.io/<repo-name>/<SYMBOL>_<PERIOD>_<INTERVAL>.html
+# ══════════════════════════════════════════════════════════════════
+
+name: BVC Dashboard Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      symbol:
+        description: "BVC ticker symbol"
+        required: true
+        default: "GRUPOSURA"
+        type: choice
+        options:
+          - GRUPOSURA
+          - PFGRUPSURA
+          - ECOPETROL
+          - BANCOLOMBIA
+          - PFBCOLOMBIA
+          - BOGOTA
+          - CORFICOLCF
+          - PFAVAL
+          - GEB
+          - ISA
+          - GRUPOARGOS
+          - CEMARGOS
+          - NUTRESA
+          - EXITO
+
+      period:
+        description: "Data period  (ytd / 1mo / 3mo / 6mo / 1y / 2y / 5y / max / 4wk / 26wk …)"
+        required: true
+        default: "2y"
+        type: choice
+        options:
+          - "2y"
+          - "1y"
+          - "6mo"
+          - "3mo"
+          - "1mo"
+          - "ytd"
+          - "5y"
+          - "max"
+          - "26wk"
+          - "12wk"
+          - "4wk"
+
+      interval:
+        description: "Candle interval"
+        required: true
+        default: "1d"
+        type: choice
+        options:
+          - "1d"
+          - "1wk"
+
+      no_news:
+        description: "Skip news fetching (faster run, works offline)"
+        type: boolean
+        default: false
+
+# ── Permissions needed to push to gh-pages branch ────────────────
+permissions:
+  contents: write
+
+jobs:
+  generate-and-deploy:
+    name: Generate Dashboard → GitHub Pages
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Install dependencies ────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install --upgrade yfinance plotly pandas numpy
+
+      # ── 4. Generate HTML dashboard ─────────────────────────────
+      - name: Generate dashboard
+        id: build
+        env:
+          INPUT_SYMBOL:   ${{ github.event.inputs.symbol }}
+          INPUT_PERIOD:   ${{ github.event.inputs.period }}
+          INPUT_INTERVAL: ${{ github.event.inputs.interval }}
+          INPUT_NO_NEWS:  ${{ github.event.inputs.no_news }}
+        run: |
+          # Build output filename: gruposura_2y_1d.html
+          # (lowercase symbol + period + interval so runs don't overwrite each other)
+          SYMBOL_LOWER=$(echo "$INPUT_SYMBOL" | tr '[:upper:]' '[:lower:]')
+          OUTPUT="${SYMBOL_LOWER}_${INPUT_PERIOD}_${INPUT_INTERVAL}.html"
+
+          # Build optional --no-news flag
+          EXTRA_ARGS=""
+          [ "$INPUT_NO_NEWS" = "true" ] && EXTRA_ARGS="--no-news"
+
+          # Run tracker (auto-installs nothing; deps installed above)
+          python sura_tracker.py \
+            --symbol   "$INPUT_SYMBOL"   \
+            --period   "$INPUT_PERIOD"   \
+            --interval "$INPUT_INTERVAL" \
+            --output   "$OUTPUT"         \
+            $EXTRA_ARGS
+
+          # Expose filename + timestamp for downstream steps
+          echo "output_file=$OUTPUT" >> "$GITHUB_OUTPUT"
+          echo "generated_at=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
+
+      # ── 5. Stage for Pages deployment ──────────────────────────
+      - name: Prepare public directory
+        run: |
+          mkdir -p public
+          cp "${{ steps.build.outputs.output_file }}" public/
+
+          # Regenerate the dashboard index page listing every dashboard in gh-pages.
+          # We check out the existing gh-pages content (if any) to enumerate old files.
+          git fetch origin gh-pages 2>/dev/null || true
+          EXISTING=""
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            EXISTING=$(git ls-tree --name-only origin/gh-pages | grep '\.html$' | grep -v '^index' || true)
+          fi
+
+          # Build <li> entries for every known dashboard (old + new)
+          ALL_FILES=$(echo -e "$EXISTING\n${{ steps.build.outputs.output_file }}" \
+            | sort -u | grep -v '^$')
+
+          ITEMS=""
+          while IFS= read -r f; do
+            LABEL=$(echo "$f" | sed 's/_/ /g; s/\.html//')
+            ITEMS="${ITEMS}<li><a href=\"${f}\">${LABEL}</a></li>\n"
+          done <<< "$ALL_FILES"
+
+          cat > public/index.html <<INDEXEOF
+          <!DOCTYPE html><html lang="en"><head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>BVC Dashboards</title>
+          <style>
+            body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;padding:40px 24px;max-width:700px;margin:0 auto;}
+            h1{font-size:24px;margin-bottom:4px;}
+            p{color:#8b949e;font-size:14px;margin-bottom:28px;}
+            ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:10px;}
+            li a{display:block;background:#161b22;border:1px solid #30363d;border-radius:8px;
+                  padding:14px 18px;color:#58a6ff;text-decoration:none;font-weight:600;
+                  text-transform:capitalize;transition:border-color .2s;}
+            li a:hover{border-color:#58a6ff;}
+            footer{margin-top:40px;font-size:11px;color:#8b949e;}
+          </style>
+          </head><body>
+          <h1>📈 BVC Dashboards</h1>
+          <p>Generated by <code>sura_tracker.py</code> via GitHub Actions. Click a dashboard to open it.</p>
+          <ul>$(printf "$ITEMS")</ul>
+          <footer>Last updated: ${{ steps.build.outputs.generated_at }}</footer>
+          </body></html>
+          INDEXEOF
+
+      # ── 6. Deploy to GitHub Pages ──────────────────────────────
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir:  ./public
+          keep_files:   true          # accumulate dashboards; don't wipe previous runs
+          commit_message: |
+            📊 ${{ github.event.inputs.symbol }} · ${{ github.event.inputs.period }} · ${{ github.event.inputs.interval }} · ${{ steps.build.outputs.generated_at }}
+
+      # ── 7. Print URL + write job summary ──────────────────────
+      - name: Print shareable URL
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          FILE="${{ steps.build.outputs.output_file }}"
+          BASE_URL="https://${OWNER}.github.io/${REPO}"
+          DASH_URL="${BASE_URL}/${FILE}"
+          INDEX_URL="${BASE_URL}/index.html"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  ✅  Dashboard ready!"
+          echo ""
+          echo "  Dashboard : ${DASH_URL}"
+          echo "  Index     : ${INDEX_URL}"
+          echo ""
+          echo "  ⏳  GitHub Pages may take ~30 s to serve the new file."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # GitHub Actions job summary (shown in the Actions UI)
+          {
+            echo "## ✅ BVC Dashboard Generated"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Symbol** | \`${{ github.event.inputs.symbol }}\` |"
+            echo "| **Period** | \`${{ github.event.inputs.period }}\` |"
+            echo "| **Interval** | \`${{ github.event.inputs.interval }}\` |"
+            echo "| **Generated** | ${{ steps.build.outputs.generated_at }} |"
+            echo "| **File** | \`${FILE}\` |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "### 🔗 Share this link"
+            echo ""
+            echo "**[${DASH_URL}](${DASH_URL})**"
+            echo ""
+            echo "---"
+            echo ""
+            echo "📋 **[Dashboard Index](${INDEX_URL})** — all generated dashboards"
+            echo ""
+            echo "> ⏳ GitHub Pages may take ~30 seconds to serve the new file after this run."
+          } >> "$GITHUB_STEP_SUMMARY"
