@@ -2,7 +2,8 @@
 # BVC Dashboard Generator — GitHub Actions Workflow
 # ══════════════════════════════════════════════════════════════════
 #
-# Triggered manually from the Actions tab (workflow_dispatch).
+# Triggered daily at 4 pm COT (21:00 UTC) and manually from the
+# Actions tab (workflow_dispatch).
 # Generates an interactive HTML dashboard using sura_tracker.py
 # and deploys it to GitHub Pages via the official deployment API.
 #
@@ -20,6 +21,8 @@
 name: BVC Dashboard Generator
 
 on:
+  schedule:
+    - cron: "0 21 * * *"        # Every day at 4 pm COT (21:00 UTC)
   workflow_dispatch:
     inputs:
 
@@ -114,10 +117,10 @@ jobs:
       - name: Generate dashboard
         id: build
         env:
-          INPUT_SYMBOL:   ${{ github.event.inputs.symbol }}
-          INPUT_PERIOD:   ${{ github.event.inputs.period }}
-          INPUT_INTERVAL: ${{ github.event.inputs.interval }}
-          INPUT_NO_NEWS:  ${{ github.event.inputs.no_news }}
+          INPUT_SYMBOL:   ${{ github.event.inputs.symbol   || 'GRUPOSURA' }}
+          INPUT_PERIOD:   ${{ github.event.inputs.period   || '2y' }}
+          INPUT_INTERVAL: ${{ github.event.inputs.interval || '1d' }}
+          INPUT_NO_NEWS:  ${{ github.event.inputs.no_news  || 'false' }}
         run: |
           SYMBOL_LOWER=$(echo "$INPUT_SYMBOL" | tr '[:upper:]' '[:lower:]')
           OUTPUT="${SYMBOL_LOWER}_${INPUT_PERIOD}_${INPUT_INTERVAL}.html"
