@@ -1284,6 +1284,53 @@ def fig_to_div(fig, div_id):
                        "modeBarButtonsToRemove": ["lasso2d", "select2d"]})
 
 
+EXPORT_COLS = ["Open", "High", "Low", "Close", "Volume", "SMA_20", "SMA_50",
+               "SMA_200", "RSI", "MACD", "Signal", "Histogram", "ATR",
+               "Daily_Return", "Cum_Return", "Rolling_Vol", "Drawdown"]
+
+
+def export_payload(df: pd.DataFrame) -> dict:
+    """Serialise the price + indicator table for client-side CSV/JSON download."""
+    cols = [c for c in EXPORT_COLS if c in df.columns]
+    rows = []
+    for ts, row in df.iterrows():
+        r = [ts.strftime("%Y-%m-%d")]
+        for c in cols:
+            v = row[c]
+            r.append(None if pd.isna(v) else round(float(v), 4))
+        rows.append(r)
+    return {"columns": ["Date"] + cols, "rows": rows}
+
+
+# Shared client-side export script: turns an embedded {columns, rows} table into
+# downloadable CSV/JSON via a Blob — no server, no dependency.
+EXPORT_JS = """
+function _dl(name, content, mime) {
+  const blob = new Blob([content], {type: mime});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+function _toCSV(tbl) {
+  const esc = v => v == null ? '' :
+    (/[",\\n]/.test(String(v)) ? '"' + String(v).replace(/"/g,'""') + '"' : v);
+  const lines = [tbl.columns.join(',')];
+  tbl.rows.forEach(r => lines.push(r.map(esc).join(',')));
+  return lines.join('\\n');
+}
+function exportTable(tbl, base, fmt) {
+  if (fmt === 'json') {
+    const objs = tbl.rows.map(r =>
+      Object.fromEntries(tbl.columns.map((c,i) => [c, r[i]])));
+    _dl(base + '.json', JSON.stringify(objs, null, 2), 'application/json');
+  } else {
+    _dl(base + '.csv', _toCSV(tbl), 'text/csv');
+  }
+}
+"""
+
+
 def build_html(df: pd.DataFrame, info: dict, period: str,
                interval: str = "1d", news_items: list = None,
                sym: dict = None, fundamentals: dict = None) -> str:
@@ -1444,6 +1491,10 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
       </a>
     </div>
   </div>"""
+
+    # ── Export data (CSV/JSON download) ──────────────────────────
+    export_json = json.dumps(export_payload(df)).replace("</", "<\\/")
+    export_base = f"{ticker_bvc.lower()}_{interval}"
 
     # ── News tab ─────────────────────────────────────────────────
     news_html = render_news_html(news_items or [], ticker_bvc)
@@ -1610,6 +1661,12 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
   </div>
 </div>
 
+<div style="padding:0 24px 12px;display:flex;gap:8px;align-items:center;">
+  <span style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;">Export data</span>
+  <button class="nf-btn" onclick="exportTable(EXPORT_DATA,'{export_base}','csv')">⬇ CSV</button>
+  <button class="nf-btn" onclick="exportTable(EXPORT_DATA,'{export_base}','json')">⬇ JSON</button>
+</div>
+
 <div class="tabs-bar">
   <button class="tab-btn active" onclick="switchTab(this,'technical')">📈 Technical Analysis</button>
   <button class="tab-btn" onclick="switchTab(this,'returns')">📊 Returns &amp; Risk</button>
@@ -1655,6 +1712,8 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
 </footer>
 
 <script>
+const EXPORT_DATA = {export_json};
+{EXPORT_JS}
 function switchTab(btn, name) {{
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1813,6 +1872,8 @@ def build_compare_html(payload: dict, period_label: str, interval: str,
   <div class="chip-actions">
     <button onclick="selectAll()">Select all</button>
     <button onclick="clearAll()">Clear</button>
+    <button onclick="exportCompare('csv')">⬇ CSV</button>
+    <button onclick="exportCompare('json')">⬇ JSON</button>
   </div>
 </div>
 
@@ -1940,6 +2001,15 @@ function toggleSym(btn) {{
 }}
 function selectAll() {{ selected = [...DATA.symbols]; render(); }}
 function clearAll() {{ selected = []; render(); }}
+
+{EXPORT_JS}
+function exportCompare(fmt) {{
+  if (!selected.length) return;
+  const mask = commonMask(selected);
+  const cols = ['Date', ...selected];
+  const rows = mask.map(i => [DATA.dates[i], ...selected.map(s => DATA.series[s].close[i])]);
+  exportTable({{columns: cols, rows: rows}}, 'colcap_compare', fmt);
+}}
 
 render();
 window.addEventListener('resize', () => {{ Plotly.Plots.resize('overlay'); Plotly.Plots.resize('corr'); }});

@@ -20,7 +20,7 @@ resumes from the **Status checklist** below — find the first unchecked box.
 ## Status checklist
 - [x] Phase 1 — Fetch resilience, caching & resume
 - [x] Phase 2 — Ticker resolver & coverage guardrails
-- [ ] Phase 3 — CSV / JSON export button
+- [x] Phase 3 — CSV / JSON export button
 - [ ] Phase 4 — COLCAP benchmark + beta
 - [ ] Phase 5 — Dividends & corporate-actions tab
 - [ ] Phase 6 — Compare-page upgrades (overlays + shareable state)
