@@ -65,12 +65,144 @@ for _pkg in ["yfinance", "plotly", "pandas", "numpy"]:
         print(f"Installing {_pkg}…")
         _install(_pkg)
 
+import hashlib
+import time
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
+
+
+# ══════════════════════════════════════════════════════════════════
+# PRICE CACHE  (resilience against Yahoo rate-limits + offline reruns)
+# ══════════════════════════════════════════════════════════════════
+# A throttled fetch falls back to the last cached frame so the page still
+# renders; the next scheduled run refetches once the rate-limit resets.
+# Cache files are pandas pickles under .cache/ (gitignored) — no new deps.
+
+CACHE_DIR = ".cache"
+
+
+def _cache_key(symbol: str, interval: str, history_kwargs: dict) -> str:
+    raw = f"{symbol}|{interval}|{sorted(history_kwargs.items())}"
+    return hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
+def _cache_path(key: str) -> str:
+    return os.path.join(CACHE_DIR, f"{key}.pkl")
+
+
+def cache_read(path: str, max_age_min):
+    """Return the cached frame only if it exists and is younger than max_age_min."""
+    if not os.path.exists(path):
+        return None
+    if max_age_min is not None:
+        age_min = (time.time() - os.path.getmtime(path)) / 60
+        if age_min > max_age_min:
+            return None
+    try:
+        return pd.read_pickle(path)
+    except Exception:
+        return None
+
+
+def cache_read_any(path: str):
+    """Return the cached frame regardless of age (stale fallback)."""
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_pickle(path)
+    except Exception:
+        return None
+
+
+def cache_write(path: str, df: pd.DataFrame) -> None:
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        df.to_pickle(path)
+    except Exception as e:
+        print(f"  ⚠️  cache write failed: {e}")
+
+
+def cached_fetch(key: str, fetch_fn, use_cache: bool = True, max_age_min=60):
+    """
+    Return data via cache-first strategy:
+      1. fresh cache (younger than max_age_min) → return it
+      2. otherwise call fetch_fn(); on success cache + return
+      3. on failure/empty fetch → fall back to stale cache if present
+    Never raises for fetch errors — returns an empty DataFrame as last resort.
+    """
+    path = _cache_path(key)
+    if use_cache:
+        fresh = cache_read(path, max_age_min)
+        if fresh is not None and not fresh.empty:
+            print("  ✅ cache hit (fresh).")
+            return fresh
+    try:
+        df = fetch_fn()
+    except Exception as e:
+        print(f"  ⚠️  fetch error: {type(e).__name__}: {e}")
+        df = None
+    if df is not None and not df.empty:
+        if use_cache:
+            cache_write(path, df)
+        return df
+    if use_cache:
+        stale = cache_read_any(path)
+        if stale is not None and not stale.empty:
+            print("  ♻️  fetch unavailable — using stale cache.")
+            return stale
+    return df if df is not None else pd.DataFrame()
+
+
+def download_history(stock, ticker: str, history_kwargs: dict, interval: str):
+    """
+    Multi-tier price fetch: stock.history() → yf.download() → native period=2y.
+    Returns (df, used_native_fallback). Catches errors internally and returns an
+    empty frame so callers (and the cache layer) can decide how to recover.
+    """
+    def _normalise_df(raw: pd.DataFrame) -> pd.DataFrame:
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        if raw.index.tz is not None:
+            raw.index = raw.index.tz_localize(None)
+        return raw
+
+    df = pd.DataFrame()
+    try:
+        df = stock.history(**history_kwargs, interval=interval)
+        if not df.empty:
+            print("  ✅ stock.history() succeeded.")
+    except Exception as e:
+        print(f"  ⚠️  stock.history() failed: {type(e).__name__}: {e}")
+
+    if df.empty:
+        print("  🔄 Retrying with yf.download()…")
+        try:
+            df = yf.download(ticker, **history_kwargs, interval=interval,
+                             progress=False, auto_adjust=True)
+            if not df.empty:
+                df = _normalise_df(df)
+                print("  ✅ yf.download() succeeded.")
+        except Exception as e:
+            print(f"  ⚠️  yf.download() failed: {type(e).__name__}: {e}")
+
+    used_native = False
+    if df.empty and "start" in history_kwargs:
+        print("  🔄 Retrying with native period=2y (ignoring custom start date)…")
+        try:
+            df = yf.download(ticker, period="2y", interval=interval,
+                             progress=False, auto_adjust=True)
+            if not df.empty:
+                df = _normalise_df(df)
+                used_native = True
+                print("  ✅ Native period=2y fallback succeeded.")
+        except Exception as e:
+            print(f"  ⚠️  Native period fallback failed: {type(e).__name__}: {e}")
+    return df, used_native
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1497,28 +1629,41 @@ function switchTab(btn, name) {{
 # MULTI-SYMBOL COMPARE  (interactive, client-side)
 # ══════════════════════════════════════════════════════════════════
 
-def fetch_multi(history_kwargs: dict, interval: str):
+def fetch_multi(history_kwargs: dict, interval: str,
+                use_cache: bool = True, max_age_min=60):
     """
-    Download Close history for every BVC_SYMBOLS ticker in one batched request.
+    Fetch Close history for every BVC_SYMBOLS ticker, per-symbol through the cache.
 
-    Returns (close_df, companies) where close_df has BVC symbols as columns
-    (registry order) and a tz-naive DatetimeIndex.
+    Going symbol-by-symbol (instead of one batch) means a partially rate-limited
+    run still renders from whatever is cached; symbols that fail with no cache are
+    skipped and refetched on the next run once the limit resets.
+
+    Returns (close_df, companies) — BVC symbols as columns (registry order),
+    tz-naive DatetimeIndex (outer-joined across symbols).
     """
-    yahoo_to_bvc = {meta["yahoo"]: bvc for bvc, meta in BVC_SYMBOLS.items()}
-    companies    = {bvc: meta["company"] for bvc, meta in BVC_SYMBOLS.items()}
-    tickers      = list(yahoo_to_bvc)
+    companies = {bvc: meta["company"] for bvc, meta in BVC_SYMBOLS.items()}
+    cols = {}
+    for bvc, meta in BVC_SYMBOLS.items():
+        yahoo = meta["yahoo"]
+        stock = yf.Ticker(yahoo)
+        key   = _cache_key(yahoo, interval, history_kwargs)
 
-    raw = yf.download(tickers, **history_kwargs, interval=interval,
-                      progress=False, auto_adjust=True)
-    if isinstance(raw.columns, pd.MultiIndex) and "Close" in raw.columns.get_level_values(0):
-        close = raw["Close"].copy()
-    else:                                   # single column came back (rare)
-        close = raw.copy()
-    if close.index.tz is not None:
-        close.index = close.index.tz_localize(None)
-    close = close.rename(columns=yahoo_to_bvc)
-    cols  = [b for b in BVC_SYMBOLS if b in close.columns]   # registry order
-    return close[cols], companies
+        def _fetch(_stock=stock, _yahoo=yahoo):
+            d, _ = download_history(_stock, _yahoo, history_kwargs, interval)
+            return d
+
+        df = cached_fetch(key, _fetch, use_cache=use_cache, max_age_min=max_age_min)
+        if df is not None and not df.empty and "Close" in df.columns:
+            s = df["Close"]
+            if s.index.tz is not None:
+                s.index = s.index.tz_localize(None)
+            cols[bvc] = s
+
+    if not cols:
+        return pd.DataFrame(), companies
+    close = pd.DataFrame(cols).sort_index()
+    ordered = [b for b in BVC_SYMBOLS if b in close.columns]   # registry order
+    return close[ordered], companies
 
 
 def build_compare_payload(closes: pd.DataFrame, companies: dict) -> dict:
@@ -1835,7 +1980,9 @@ def run_compare(args):
     print(f"{'═'*62}\n")
 
     print("📡 Downloading all COLCAP symbols from Yahoo Finance…")
-    closes, companies = fetch_multi(history_kwargs, args.interval)
+    closes, companies = fetch_multi(history_kwargs, args.interval,
+                                    use_cache=not args.no_cache,
+                                    max_age_min=args.cache_ttl)
     got = [c for c in closes.columns if closes[c].notna().any()]
     print(f"  ✅ Data for {len(got)}/{len(BVC_SYMBOLS)} symbols: {'  '.join(got)}")
     if not got:
@@ -1907,6 +2054,14 @@ def main():
         "--compare", action="store_true",
         help="Generate the interactive COLCAP comparison page (all symbols)"
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Bypass the local price cache (always fetch fresh from Yahoo)"
+    )
+    parser.add_argument(
+        "--cache-ttl", type=int, default=60, metavar="MIN",
+        help="Cache freshness window in minutes (default: 60). Older entries refetch."
+    )
     args = parser.parse_args()
 
     # ── Compare mode: build the all-symbols comparison page and exit ──
@@ -1960,54 +2115,22 @@ def main():
         print("📄 Loading custom news sources…")
         extra_feeds = load_extra_sources(args.sources)
 
-    # ── Fetch price data (with multi-tier fallback) ──────────────
+    # ── Fetch price data (cache-first, multi-tier fallback) ──────
     print(f"📡 Fetching price data from Yahoo Finance ({sym['yahoo']})…")
     stock  = yf.Ticker(sym["yahoo"])
     ticker = sym["yahoo"]
 
-    def _normalise_df(raw: pd.DataFrame) -> pd.DataFrame:
-        """Flatten MultiIndex columns (yf.download single-ticker) and tz-strip index."""
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
-        if raw.index.tz is not None:
-            raw.index = raw.index.tz_localize(None)
-        return raw
+    _native = {"used": False}
+    def _fetch():
+        d, used_native = download_history(stock, ticker, history_kwargs, args.interval)
+        _native["used"] = used_native
+        return d
 
-    df = pd.DataFrame()
-
-    # ── Attempt 1: stock.history() ─────────────────────────────
-    try:
-        df = stock.history(**history_kwargs, interval=args.interval)
-        if not df.empty:
-            print("  ✅ stock.history() succeeded.")
-    except (TypeError, KeyError, Exception) as e:
-        print(f"  ⚠️  stock.history() failed: {type(e).__name__}: {e}")
-
-    # ── Attempt 2: yf.download() (different code path) ─────────
-    if df.empty:
-        print("  🔄 Retrying with yf.download()…")
-        try:
-            dl_kwargs = {**history_kwargs, "interval": args.interval,
-                        "progress": False, "auto_adjust": True}
-            df = yf.download(ticker, **dl_kwargs)
-            if not df.empty:
-                df = _normalise_df(df)
-                print("  ✅ yf.download() succeeded.")
-        except Exception as e:
-            print(f"  ⚠️  yf.download() failed: {type(e).__name__}: {e}")
-
-    # ── Attempt 3: native period="2y" fallback ──────────────────
-    if df.empty and "start" in history_kwargs:
-        print("  🔄 Retrying with native period=2y (ignoring custom start date)…")
-        try:
-            df = yf.download(ticker, period="2y", interval=args.interval,
-                             progress=False, auto_adjust=True)
-            if not df.empty:
-                df = _normalise_df(df)
-                period_label = "2 Years (fallback)"
-                print("  ✅ Native period=2y fallback succeeded.")
-        except Exception as e:
-            print(f"  ⚠️  Native period fallback failed: {type(e).__name__}: {e}")
+    cache_key = _cache_key(sym["yahoo"], args.interval, history_kwargs)
+    df = cached_fetch(cache_key, _fetch,
+                      use_cache=not args.no_cache, max_age_min=args.cache_ttl)
+    if _native["used"] and "start" in history_kwargs:
+        period_label = "2 Years (fallback)"
 
     if df.empty:
         print(f"\n❌ All fetch attempts failed for {ticker}.")
