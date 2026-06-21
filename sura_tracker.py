@@ -205,6 +205,48 @@ def download_history(stock, ticker: str, history_kwargs: dict, interval: str):
     return df, used_native
 
 
+def candidate_tickers(symbol_meta: dict, bvc_symbol: str) -> list:
+    """
+    Ordered Yahoo ticker candidates for a BVC symbol.
+
+    Tries the registry ticker first, then any curated same-currency alternates
+    (``yahoo_alt``), then a plain ``TICKER.CL`` — de-duplicated, order preserved.
+    Alternates are intentionally COP/BVC listings only (no foreign ADRs) so the
+    dashboard's currency assumptions stay valid.
+    """
+    cands = [symbol_meta.get("yahoo") or f"{bvc_symbol}.CL"]
+    cands += list(symbol_meta.get("yahoo_alt", []))
+    cands.append(f"{bvc_symbol}.CL")
+    seen, out = set(), []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def resolve_history(bvc_symbol: str, symbol_meta: dict, history_kwargs: dict,
+                    interval: str, use_cache: bool = True, max_age_min=60):
+    """
+    Try each candidate ticker (cache-first) until one returns data.
+
+    Returns (resolved_ticker, df). If none yield data, returns the primary
+    candidate with an empty frame so the caller can report missing coverage.
+    """
+    candidates = candidate_tickers(symbol_meta, bvc_symbol)
+    for tk in candidates:
+        key = _cache_key(tk, interval, history_kwargs)
+
+        def _fetch(t=tk):
+            d, _ = download_history(yf.Ticker(t), t, history_kwargs, interval)
+            return d
+
+        df = cached_fetch(key, _fetch, use_cache=use_cache, max_age_min=max_age_min)
+        if df is not None and not df.empty:
+            return tk, df
+    return candidates[0], pd.DataFrame()
+
+
 # ══════════════════════════════════════════════════════════════════
 # BVC SYMBOL REGISTRY
 # ══════════════════════════════════════════════════════════════════
@@ -1644,15 +1686,8 @@ def fetch_multi(history_kwargs: dict, interval: str,
     companies = {bvc: meta["company"] for bvc, meta in BVC_SYMBOLS.items()}
     cols = {}
     for bvc, meta in BVC_SYMBOLS.items():
-        yahoo = meta["yahoo"]
-        stock = yf.Ticker(yahoo)
-        key   = _cache_key(yahoo, interval, history_kwargs)
-
-        def _fetch(_stock=stock, _yahoo=yahoo):
-            d, _ = download_history(_stock, _yahoo, history_kwargs, interval)
-            return d
-
-        df = cached_fetch(key, _fetch, use_cache=use_cache, max_age_min=max_age_min)
+        _, df = resolve_history(bvc, meta, history_kwargs, interval,
+                                use_cache=use_cache, max_age_min=max_age_min)
         if df is not None and not df.empty and "Close" in df.columns:
             s = df["Close"]
             if s.index.tz is not None:
@@ -1701,6 +1736,15 @@ def build_compare_html(payload: dict, period_label: str, interval: str,
     interval_lbl = "Weekly" if interval == "1wk" else "Daily"
     symbols      = payload["symbols"]
     default_syms = symbols[:default_n]
+    missing      = [s for s in BVC_SYMBOLS if s not in symbols]
+    coverage_note = (
+        f'<p style="color:#e3b341;font-size:12px;margin-top:6px;">⚠️ '
+        f'No Yahoo Finance data for: {", ".join(missing)} '
+        f'(will be retried on the next run).</p>'
+        if missing else
+        f'<p style="color:#3fb950;font-size:12px;margin-top:6px;">'
+        f'✅ Coverage: all {len(symbols)} symbols.</p>'
+    )
 
     data_json  = json.dumps(payload).replace("</", "<\\/")
     colors_json = json.dumps(COMPARE_COLORS)
@@ -1760,6 +1804,7 @@ def build_compare_html(payload: dict, period_label: str, interval: str,
 <div class="header">
   <h1>📊 COLCAP Compare</h1>
   <p>{EXCHANGE} · Colombia · {CURRENCY} · {interval_lbl} · {period_label} · all data precalculated · select symbols below</p>
+  {coverage_note}
 </div>
 
 <div class="controls">
@@ -2115,22 +2160,14 @@ def main():
         print("📄 Loading custom news sources…")
         extra_feeds = load_extra_sources(args.sources)
 
-    # ── Fetch price data (cache-first, multi-tier fallback) ──────
+    # ── Fetch price data (resolver + cache-first, multi-tier) ────
     print(f"📡 Fetching price data from Yahoo Finance ({sym['yahoo']})…")
-    stock  = yf.Ticker(sym["yahoo"])
-    ticker = sym["yahoo"]
-
-    _native = {"used": False}
-    def _fetch():
-        d, used_native = download_history(stock, ticker, history_kwargs, args.interval)
-        _native["used"] = used_native
-        return d
-
-    cache_key = _cache_key(sym["yahoo"], args.interval, history_kwargs)
-    df = cached_fetch(cache_key, _fetch,
-                      use_cache=not args.no_cache, max_age_min=args.cache_ttl)
-    if _native["used"] and "start" in history_kwargs:
-        period_label = "2 Years (fallback)"
+    ticker, df = resolve_history(sym["bvc"], sym, history_kwargs, args.interval,
+                                 use_cache=not args.no_cache, max_age_min=args.cache_ttl)
+    if ticker != sym["yahoo"]:
+        print(f"  ℹ️  Resolved {sym['yahoo']} → {ticker}")
+        sym["yahoo"] = ticker
+    stock = yf.Ticker(ticker)
 
     if df.empty:
         print(f"\n❌ All fetch attempts failed for {ticker}.")
