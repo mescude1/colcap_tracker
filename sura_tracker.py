@@ -354,6 +354,11 @@ BVC_SYMBOLS = {
 EXCHANGE = "BVC"
 CURRENCY = "COP"
 
+# COLCAP index proxy (iShares COLCAP ETF) used as the benchmark for beta /
+# relative performance. Resolver-backed, so it degrades gracefully if missing.
+BENCHMARK = {"label": "COLCAP", "yahoo": "ICOLCAP.CL",
+             "company": "iShares COLCAP (ICOLCAP)"}
+
 # Embedded fundamental data — GRUPOSURA only (official press releases FY2022–2024)
 FUNDAMENTAL = {
     "years":      ["2022", "2023", "2024"],
@@ -458,6 +463,26 @@ def max_drawdown(close: pd.Series) -> float:
     """Maximum peak-to-trough drawdown as a fraction (e.g. -0.34 for -34%)."""
     dd = calc_drawdown(close.dropna())
     return float(dd.min()) if not dd.empty else float("nan")
+
+
+def calc_beta(stock_ret: pd.Series, index_ret: pd.Series) -> float:
+    """Beta = cov(stock, index) / var(index) over aligned (inner-join) returns."""
+    joined = pd.concat([stock_ret, index_ret], axis=1).dropna()
+    if len(joined) < 2:
+        return float("nan")
+    var = joined.iloc[:, 1].var()
+    if var == 0:
+        return float("nan")
+    return float(joined.cov().iloc[0, 1] / var)
+
+
+def tracking_error(stock_ret: pd.Series, index_ret: pd.Series,
+                   interval: str = "1d") -> float:
+    """Annualised tracking error (%) — std of the active (stock − index) return."""
+    diff = (stock_ret - index_ret).dropna()
+    if diff.empty:
+        return float("nan")
+    return float(diff.std() * ann_factor_for(interval) * 100)
 
 
 def calc_indicators(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
@@ -660,12 +685,16 @@ def fig_drawdown(df):
     return fig
 
 
-def fig_cumulative(df):
+def fig_cumulative(df, bench_cum=None, bench_label="COLCAP"):
     dates = df.index.strftime("%Y-%m-%d").tolist()
     cum   = (df["Cum_Return"] * 100).round(2).tolist()
     fig = go.Figure(go.Scatter(x=dates, y=cum, name="Cumulative Return",
         line=dict(color=BLUE, width=2),
         fill="tozeroy", fillcolor="rgba(88,166,255,0.1)"))
+    if bench_cum is not None:
+        fig.add_trace(go.Scatter(x=dates, y=(bench_cum * 100).round(2).tolist(),
+            name=f"{bench_label} (benchmark)",
+            line=dict(color=YELLOW, width=1.5, dash="dot")))
     fig.update_layout(**_layout(
         title=dict(text="Cumulative Returns", font=dict(size=13, color=TEXT2)),
         yaxis=dict(title="Return (%)"),
@@ -1333,7 +1362,8 @@ function exportTable(tbl, base, fmt) {
 
 def build_html(df: pd.DataFrame, info: dict, period: str,
                interval: str = "1d", news_items: list = None,
-               sym: dict = None, fundamentals: dict = None) -> str:
+               sym: dict = None, fundamentals: dict = None,
+               benchmark: dict = None) -> str:
     """
     Build a fully self-contained HTML dashboard.
 
@@ -1365,6 +1395,20 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
     max_dd      = max_drawdown(df["Close"]) * 100
     interval_label = "Weekly" if interval == "1wk" else "Daily"
 
+    # ── Benchmark (COLCAP) — beta, excess return, overlay ────────
+    beta = excess = None
+    bench_cum = None
+    bench_label = (benchmark or {}).get("label", "COLCAP")
+    if benchmark is not None and benchmark.get("close") is not None:
+        bclose = benchmark["close"]
+        bret   = bclose.pct_change()
+        beta   = calc_beta(df["Daily_Return"], bret)
+        bvalid = bclose.dropna()
+        if bvalid.size > 1:
+            bench_period = (bvalid.iloc[-1] / bvalid.iloc[0] - 1) * 100
+            excess = period_ret - bench_period
+        bench_cum = (1 + bret).cumprod() - 1
+
     # ── Yahoo Finance info dict values ──────────────────────────
     pe         = info.get("trailingPE")
     div_yield  = (info.get("dividendYield") or 0) * 100
@@ -1384,7 +1428,7 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
         "rsi":     fig_to_div(fig_rsi(df),                     "chart-rsi"),
         "macd":    fig_to_div(fig_macd(df),                    "chart-macd"),
         "atr":     fig_to_div(fig_atr(df),                     "chart-atr"),
-        "cum":     fig_to_div(fig_cumulative(df),              "chart-cum"),
+        "cum":     fig_to_div(fig_cumulative(df, bench_cum, bench_label), "chart-cum"),
         "dist":    fig_to_div(fig_distribution(df),            "chart-dist"),
         "vol":     fig_to_div(fig_volatility(df),              "chart-vol"),
         "drawdown":fig_to_div(fig_drawdown(df),                "chart-drawdown"),
@@ -1413,6 +1457,20 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
                        if div_yield else '<div class="metric-value">N/A</div>')
     metric_mktcap   = (f'<div class="metric-value">{currency} {mktcap_t:.1f}T</div><div class="metric-sub">~{mktcap/1e9:.0f}B {currency} · {exchange}</div>'
                        if mktcap_t else '<div class="metric-value">N/A</div><div class="metric-sub">Yahoo Finance</div>')
+
+    # ── Benchmark cards (rendered only when benchmark data is present) ──
+    card_beta = ""
+    if beta is not None and not np.isnan(beta):
+        card_beta = (
+            f'<div class="metric-card"><div class="metric-label">Beta vs {bench_label}</div>'
+            f'<div class="metric-value">{beta:.2f}</div>'
+            f'<div class="metric-sub">{interval_label} · {bench_label}</div></div>')
+    card_excess = ""
+    if excess is not None:
+        card_excess = (
+            f'<div class="metric-card"><div class="metric-label">Excess vs {bench_label}</div>'
+            f'<div class="metric-value" style="color:{"var(--green)" if excess>=0 else "var(--red)"}">{excess:+.1f}%</div>'
+            f'<div class="metric-sub">{period} · price-based</div></div>')
 
     # ── Fundamentals tab content ─────────────────────────────────
     if has_fund:
@@ -1658,6 +1716,8 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
       <div class="metric-label">Market Cap</div>
       {metric_mktcap}
     </div>
+    {card_beta}
+    {card_excess}
   </div>
 </div>
 
@@ -2174,6 +2234,10 @@ def main():
         help="Bypass the local price cache (always fetch fresh from Yahoo)"
     )
     parser.add_argument(
+        "--no-benchmark", action="store_true",
+        help="Skip the COLCAP benchmark fetch (no beta / excess-return cards)"
+    )
+    parser.add_argument(
         "--cache-ttl", type=int, default=60, metavar="MIN",
         help="Cache freshness window in minutes (default: 60). Older entries refetch."
     )
@@ -2275,6 +2339,22 @@ def main():
         else:
             print("  ℹ️  No fundamentals available on Yahoo for this ticker.")
 
+    # ── Benchmark (COLCAP) ───────────────────────────────────────
+    benchmark = None
+    if not args.no_benchmark and sym["bvc"] != BENCHMARK["label"]:
+        print("📉 Fetching COLCAP benchmark…")
+        _, bdf = resolve_history("ICOLCAP", BENCHMARK, history_kwargs, args.interval,
+                                 use_cache=not args.no_cache, max_age_min=args.cache_ttl)
+        if not bdf.empty and "Close" in bdf.columns:
+            bclose = bdf["Close"]
+            if bclose.index.tz is not None:
+                bclose.index = bclose.index.tz_localize(None)
+            benchmark = {"label": BENCHMARK["label"],
+                         "close": bclose.reindex(df.index).ffill()}
+            print("  ✅ Benchmark loaded.")
+        else:
+            print("  ℹ️  COLCAP benchmark unavailable — skipping beta/excess.")
+
     # ── News ────────────────────────────────────────────────────
     news_items = []
     if not args.no_news:
@@ -2288,7 +2368,8 @@ def main():
     html_content = build_html(df, info, period_label,
                               interval=args.interval,
                               news_items=news_items,
-                              sym=sym, fundamentals=fundamentals)
+                              sym=sym, fundamentals=fundamentals,
+                              benchmark=benchmark)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html_content)
