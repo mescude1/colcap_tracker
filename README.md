@@ -78,9 +78,46 @@ python sura_tracker.py --symbol ECOPETROL --period 1y
 python sura_tracker.py --symbol BANCOLOMBIA --interval 1wk --period 2y
 python sura_tracker.py --symbol GRUPOSURA --period 6mo --no-news
 python sura_tracker.py --sources sources_example.txt
+
+# Interactive comparison of ALL COLCAP symbols in one page
+python sura_tracker.py --compare
+python sura_tracker.py --compare --period 1y --interval 1wk --output compare.html
 ```
 
 The generated HTML file opens in any browser — no server needed.
+
+---
+
+## 📊 Compare mode (interactive)
+
+`--compare` builds a single self-contained `compare.html` with **every COLCAP
+symbol precalculated and embedded**. Open it and pick symbols from the selector —
+the browser recomputes everything client-side (no server):
+
+- **Rebased price overlay** — all selected symbols indexed to 100 at the first common date
+- **Return-correlation heatmap** — pairwise Pearson correlation of daily/weekly returns
+- **Summary table** — period return, annualised volatility, Sharpe ratio and last price
+
+Symbols with no Yahoo Finance data for the chosen period are skipped automatically.
+
+---
+
+## 📈 Per-symbol analytics
+
+Each dashboard includes candlesticks + Bollinger/MAs, volume, RSI, MACD, **ATR(14)**,
+cumulative returns, **drawdown-from-peak**, return distribution, rolling volatility and
+a monthly heatmap. Header metric cards include **Sharpe ratio** and **max drawdown**.
+Fundamentals are pulled **live from Yahoo Finance** for any ticker (GRUPOSURA keeps its
+hand-curated FY2022–2024 data).
+
+---
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest                 # 54 offline unit + functional tests, no network needed
+```
 
 ---
 
@@ -127,10 +164,16 @@ Any other BVC ticker is tried automatically as `TICKER.CL` on Yahoo Finance.
 
 ```
 Colcap Tracker/
-├── sura_tracker.py          # main dashboard generator
+├── sura_tracker.py          # main dashboard + compare generator
 ├── sources_example.txt      # custom RSS feed template
+├── requirements.txt         # runtime deps
+├── requirements-dev.txt     # + pytest for tests
+├── tests/                   # offline unit + functional tests
 ├── README.md
 └── .github/
     └── workflows/
-        └── bvc_dashboard.yml   # GitHub Actions workflow
+        └── bvc_dashboard.yml   # GitHub Actions workflow (hourly 8am–4pm COT)
 ```
+
+> **Schedule:** the workflow runs hourly from **8 am–4 pm Bogotá time**
+> (`0 13-21 * * *`, UTC-5) and regenerates `compare.html` on every run.

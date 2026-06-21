@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+colcap/
+.venv/
+venv/
+
+# Generated dashboards
+*_dashboard.html
+*_2y_*.html
+*_1y_*.html
+*_6mo_*.html
+compare.html
+index.html
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

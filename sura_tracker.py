@@ -44,6 +44,7 @@ Data source: Yahoo Finance (.CL BVC tickers) + Google News RSS
 import argparse
 import sys
 import html as html_lib
+import json
 import os
 import re
 import urllib.parse
@@ -239,6 +240,52 @@ def calc_bollinger(series: pd.Series, window=20, num_std=2):
     return upper, mid, lower
 
 
+def calc_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average True Range — volatility in price units (Wilder's smoothing via EMA)."""
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    true_range = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return true_range.ewm(alpha=1 / period, adjust=False).mean()
+
+
+def calc_drawdown(close: pd.Series) -> pd.Series:
+    """Drawdown from the running peak, as a fraction (0 = at peak, -0.2 = 20% below)."""
+    running_max = close.cummax()
+    return close / running_max - 1.0
+
+
+def ann_factor_for(interval: str) -> float:
+    """Annualisation factor for return series at the given bar interval."""
+    return np.sqrt(52) if interval == "1wk" else np.sqrt(252)
+
+
+def sharpe_ratio(returns: pd.Series, interval: str = "1d", rf: float = 0.0) -> float:
+    """Annualised Sharpe ratio of a periodic-return series (rf = per-period risk-free)."""
+    r = returns.dropna()
+    if r.empty or r.std() == 0:
+        return float("nan")
+    return (r.mean() - rf) / r.std() * ann_factor_for(interval)
+
+
+def sortino_ratio(returns: pd.Series, interval: str = "1d", rf: float = 0.0) -> float:
+    """Annualised Sortino ratio — like Sharpe but penalising only downside deviation."""
+    r = returns.dropna()
+    downside = r[r < rf]
+    if r.empty or downside.empty or downside.std() == 0:
+        return float("nan")
+    return (r.mean() - rf) / downside.std() * ann_factor_for(interval)
+
+
+def max_drawdown(close: pd.Series) -> float:
+    """Maximum peak-to-trough drawdown as a fraction (e.g. -0.34 for -34%)."""
+    dd = calc_drawdown(close.dropna())
+    return float(dd.min()) if not dd.empty else float("nan")
+
+
 def calc_indicators(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
     """Calculate technical indicators, adapting windows and annualisation to interval."""
     if interval == "1wk":
@@ -255,9 +302,11 @@ def calc_indicators(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
     df["RSI"]     = calc_rsi(close)
     df["MACD"], df["Signal"], df["Histogram"] = calc_macd(close)
     df["BB_Upper"], df["BB_Mid"], df["BB_Lower"] = calc_bollinger(close)
+    df["ATR"]          = calc_atr(df)
     df["Daily_Return"] = close.pct_change()
     df["Cum_Return"]   = (1 + df["Daily_Return"]).cumprod() - 1
     df["Rolling_Vol"]  = df["Daily_Return"].rolling(vol_window).std() * ann_factor * 100
+    df["Drawdown"]     = calc_drawdown(close)
     return df
 
 
@@ -410,6 +459,33 @@ def fig_macd(df):
     return fig
 
 
+def fig_atr(df):
+    dates = df.index.strftime("%Y-%m-%d").tolist()
+    fig = go.Figure(go.Scatter(x=dates, y=df["ATR"].round(2).tolist(), name="ATR(14)",
+        line=dict(color=PURPLE, width=1.5),
+        fill="tozeroy", fillcolor=rgba(PURPLE, 0.09)))
+    fig.update_layout(**_layout(
+        title=dict(text="Average True Range (14)", font=dict(size=13, color=TEXT2)),
+        yaxis=dict(title=f"ATR ({CURRENCY})"),
+        height=190, margin=dict(l=60, r=20, t=30, b=30),
+    ))
+    return fig
+
+
+def fig_drawdown(df):
+    dates = df.index.strftime("%Y-%m-%d").tolist()
+    dd    = (df["Drawdown"] * 100).round(2).tolist()
+    fig = go.Figure(go.Scatter(x=dates, y=dd, name="Drawdown",
+        line=dict(color=RED, width=1.5),
+        fill="tozeroy", fillcolor=rgba(RED, 0.12)))
+    fig.update_layout(**_layout(
+        title=dict(text="Drawdown from Peak (%)", font=dict(size=13, color=TEXT2)),
+        yaxis=dict(title="Drawdown (%)", rangemode="tozero"),
+        height=250, margin=dict(l=60, r=20, t=30, b=30),
+    ))
+    return fig
+
+
 def fig_cumulative(df):
     dates = df.index.strftime("%Y-%m-%d").tolist()
     cum   = (df["Cum_Return"] * 100).round(2).tolist()
@@ -547,6 +623,134 @@ def fig_fund_div():
         height=280, margin=dict(l=60, r=20, t=30, b=30),
     ))
     return fig
+
+
+# ── Yahoo Finance fundamentals (any ticker, best-effort) ────────────
+
+def _fin_row(fin, *names):
+    """Find a row in a yfinance financials DataFrame by any candidate line-item name."""
+    if fin is None or getattr(fin, "empty", True):
+        return None
+    idx_lower = {str(i).lower(): i for i in fin.index}
+    for name in names:                       # pass 1: exact match
+        if name.lower() in idx_lower:
+            return fin.loc[idx_lower[name.lower()]]
+    for name in names:                       # pass 2: substring match
+        for key, orig in idx_lower.items():
+            if name.lower() in key:
+                return fin.loc[orig]
+    return None
+
+
+def fetch_fundamentals(stock) -> dict:
+    """
+    Pull annual fundamentals from Yahoo Finance (yfinance) into a normalized dict.
+
+    Monetary series are scaled to trillions of the reporting currency; EPS stays raw.
+    Tolerant of missing/empty data — BVC '.CL' tickers are often sparse on Yahoo —
+    returning {"available": False, …} rather than raising.
+    """
+    out = {"available": False, "years": [], "revenue": [],
+           "op_income": [], "net_income": [], "eps": []}
+    try:
+        fin = stock.financials
+    except Exception:
+        fin = None
+    if fin is None or getattr(fin, "empty", True):
+        return out
+
+    try:
+        cols = sorted(fin.columns, key=lambda c: pd.Timestamp(c))
+    except Exception:
+        cols = list(fin.columns)
+    out["years"] = [str(pd.Timestamp(c).year) for c in cols]
+
+    def series(row, scale):
+        if row is None:
+            return [None] * len(cols)
+        vals = []
+        for c in cols:
+            v = row.get(c)
+            vals.append(round(float(v) / scale, 2)
+                        if v is not None and pd.notna(v) else None)
+        return vals
+
+    out["revenue"]    = series(_fin_row(fin, "Total Revenue", "Revenue", "Operating Revenue"), 1e12)
+    out["op_income"]  = series(_fin_row(fin, "Operating Income", "Total Operating Income As Reported"), 1e12)
+    out["net_income"] = series(_fin_row(fin, "Net Income", "Net Income Common Stockholders"), 1e12)
+    out["eps"]        = series(_fin_row(fin, "Diluted EPS", "Basic EPS"), 1)
+    out["available"]  = any(v is not None for v in out["revenue"] + out["net_income"])
+    return out
+
+
+def fig_fund_grouped(years, series_specs, title, yaxis_title, suffix=""):
+    """Generic grouped/standalone bar chart. series_specs: list of (name, values, color)."""
+    fig = go.Figure()
+    for name, vals, color in series_specs:
+        fig.add_trace(go.Bar(
+            x=years, y=vals, name=name, marker_color=color,
+            text=[f"{v}{suffix}" if v is not None else "—" for v in vals],
+            textposition="outside"))
+    fig.update_layout(**_layout(
+        barmode="group",
+        title=dict(text=title, font=dict(size=13, color=TEXT2)),
+        yaxis=dict(title=yaxis_title),
+        height=280, margin=dict(l=60, r=20, t=30, b=30),
+    ))
+    return fig
+
+
+def build_yahoo_fund_tab(fund: dict, ticker_bvc: str, ticker_yf: str, currency: str) -> str:
+    """Fundamentals-tab HTML built from Yahoo Finance data (non-curated tickers)."""
+    years = fund["years"]
+    yf_url = f"https://finance.yahoo.com/quote/{ticker_yf}/financials/"
+    divs = {
+        "rev": fig_to_div(fig_fund_grouped(
+            years,
+            [("Revenue", fund["revenue"], BLUE),
+             ("Operating Income", fund["op_income"], GREEN)],
+            f"Revenue & Operating Income ({currency} Trillion)", f"{currency} Trillion",
+            suffix="T"), "chart-rev"),
+        "ni": fig_to_div(fig_fund_grouped(
+            years, [("Net Income", fund["net_income"], PURPLE)],
+            f"Net Income ({currency} Trillion)", f"{currency} Trillion",
+            suffix="T"), "chart-ni"),
+        "eps": fig_to_div(fig_fund_grouped(
+            years, [("EPS", fund["eps"], ORANGE)],
+            f"Earnings Per Share ({currency})", currency), "chart-eps"),
+    }
+
+    def _cell(v, suffix=""):
+        return f"{v}{suffix}" if v is not None else "—"
+
+    rows = ""
+    table_spec = [("Revenue (T)", fund["revenue"], "T"),
+                  ("Operating Income (T)", fund["op_income"], "T"),
+                  ("Net Income (T)", fund["net_income"], "T"),
+                  ("EPS", fund["eps"], "")]
+    for label, vals, suf in table_spec:
+        cells = "".join(f"<td>{_cell(v, suf)}</td>" for v in vals)
+        rows += f"<tr><td>{label}</td>{cells}</tr>"
+    head = "".join(f"<th>FY{y}</th>" for y in years)
+
+    return f"""
+  <div class="info-note">
+    <strong>Fundamental data</strong> for <strong>{ticker_bvc}</strong> sourced live from
+    <a href="{yf_url}" target="_blank">Yahoo Finance</a>. Coverage for BVC tickers can be
+    partial — missing values show as “—”. Monetary figures in <strong>{currency} Trillion</strong>.
+  </div>
+  <div class="chart-row">
+    <div class="chart-card">{divs["rev"]}</div>
+    <div class="chart-card">{divs["ni"]}</div>
+  </div>
+  <div class="chart-card">{divs["eps"]}</div>
+  <div class="chart-card">
+    <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;">Annual Financials — Yahoo Finance</div>
+    <table class="fund-table">
+      <thead><tr><th>Metric</th>{head}</tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>"""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -908,7 +1112,7 @@ def fig_to_div(fig, div_id):
 
 def build_html(df: pd.DataFrame, info: dict, period: str,
                interval: str = "1d", news_items: list = None,
-               sym: dict = None) -> str:
+               sym: dict = None, fundamentals: dict = None) -> str:
     """
     Build a fully self-contained HTML dashboard.
 
@@ -936,6 +1140,8 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
     period_ret  = (df["Close"].iloc[-1] / df["Close"].iloc[0] - 1) * 100
     ann_factor  = np.sqrt(52) if interval == "1wk" else np.sqrt(252)
     ann_vol     = df["Daily_Return"].std() * ann_factor * 100
+    sharpe      = sharpe_ratio(df["Daily_Return"], interval)
+    max_dd      = max_drawdown(df["Close"]) * 100
     interval_label = "Weekly" if interval == "1wk" else "Daily"
 
     # ── Yahoo Finance info dict values ──────────────────────────
@@ -956,9 +1162,11 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
         "volume":  fig_to_div(fig_volume(df),                  "chart-volume"),
         "rsi":     fig_to_div(fig_rsi(df),                     "chart-rsi"),
         "macd":    fig_to_div(fig_macd(df),                    "chart-macd"),
+        "atr":     fig_to_div(fig_atr(df),                     "chart-atr"),
         "cum":     fig_to_div(fig_cumulative(df),              "chart-cum"),
         "dist":    fig_to_div(fig_distribution(df),            "chart-dist"),
         "vol":     fig_to_div(fig_volatility(df),              "chart-vol"),
+        "drawdown":fig_to_div(fig_drawdown(df),                "chart-drawdown"),
         "heatmap": fig_to_div(fig_monthly_heatmap(df),         "chart-heatmap"),
     }
 
@@ -1036,6 +1244,8 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;">Subsidiary Performance — FY2024</div>
     <div class="segment-grid">{seg_html}</div>
   </div>"""
+    elif fundamentals and fundamentals.get("available"):
+        fund_tab_html = build_yahoo_fund_tab(fundamentals, ticker_bvc, ticker_yf, currency)
     else:
         yf_url = f"https://finance.yahoo.com/quote/{ticker_yf}/financials/"
         fund_tab_html = f"""
@@ -1210,6 +1420,16 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
       <div class="metric-sub">Historical · √{252 if interval=='1d' else 52}</div>
     </div>
     <div class="metric-card">
+      <div class="metric-label">Sharpe Ratio</div>
+      <div class="metric-value" style="color:{'var(--green)' if sharpe>=1 else ('var(--text)' if sharpe>=0 else 'var(--red)')}">{sharpe:.2f}</div>
+      <div class="metric-sub">Annualised · rf=0</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Max Drawdown</div>
+      <div class="metric-value" style="color:var(--red)">{max_dd:.1f}%</div>
+      <div class="metric-sub">Peak-to-trough · {interval_label}</div>
+    </div>
+    <div class="metric-card">
       <div class="metric-label">Market Cap</div>
       {metric_mktcap}
     </div>
@@ -1228,10 +1448,12 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
   <div class="chart-card">{divs["volume"]}</div>
   <div class="chart-card">{divs["rsi"]}</div>
   <div class="chart-card">{divs["macd"]}</div>
+  <div class="chart-card">{divs["atr"]}</div>
 </div>
 
 <div id="tab-returns" class="tab-pane">
   <div class="chart-card">{divs["cum"]}</div>
+  <div class="chart-card">{divs["drawdown"]}</div>
   <div class="chart-row">
     <div class="chart-card">{divs["dist"]}</div>
     <div class="chart-card">{divs["vol"]}</div>
@@ -1266,6 +1488,271 @@ function switchTab(btn, name) {{
   btn.classList.add('active');
   window.dispatchEvent(new Event('resize'));
 }}
+</script>
+</body>
+</html>"""
+
+
+# ══════════════════════════════════════════════════════════════════
+# MULTI-SYMBOL COMPARE  (interactive, client-side)
+# ══════════════════════════════════════════════════════════════════
+
+def fetch_multi(history_kwargs: dict, interval: str):
+    """
+    Download Close history for every BVC_SYMBOLS ticker in one batched request.
+
+    Returns (close_df, companies) where close_df has BVC symbols as columns
+    (registry order) and a tz-naive DatetimeIndex.
+    """
+    yahoo_to_bvc = {meta["yahoo"]: bvc for bvc, meta in BVC_SYMBOLS.items()}
+    companies    = {bvc: meta["company"] for bvc, meta in BVC_SYMBOLS.items()}
+    tickers      = list(yahoo_to_bvc)
+
+    raw = yf.download(tickers, **history_kwargs, interval=interval,
+                      progress=False, auto_adjust=True)
+    if isinstance(raw.columns, pd.MultiIndex) and "Close" in raw.columns.get_level_values(0):
+        close = raw["Close"].copy()
+    else:                                   # single column came back (rare)
+        close = raw.copy()
+    if close.index.tz is not None:
+        close.index = close.index.tz_localize(None)
+    close = close.rename(columns=yahoo_to_bvc)
+    cols  = [b for b in BVC_SYMBOLS if b in close.columns]   # registry order
+    return close[cols], companies
+
+
+def build_compare_payload(closes: pd.DataFrame, companies: dict) -> dict:
+    """Turn an aligned Close DataFrame into a JSON-serialisable payload for the page."""
+    closes = closes.dropna(axis=1, how="all").sort_index()
+    series = {
+        sym: {
+            "name":  companies.get(sym, sym),
+            "close": [None if pd.isna(v) else round(float(v), 4) for v in closes[sym]],
+        }
+        for sym in closes.columns
+    }
+    return {
+        "dates":   [d.strftime("%Y-%m-%d") for d in closes.index],
+        "symbols": list(closes.columns),
+        "series":  series,
+    }
+
+
+COMPARE_COLORS = [BLUE, GREEN, ORANGE, PURPLE, YELLOW, RED, "#2dd4bf",
+                  "#f472b6", "#a3e635", "#60a5fa", "#fb923c", "#c084fc",
+                  "#34d399", "#facc15"]
+
+
+def build_compare_html(payload: dict, period_label: str, interval: str,
+                       default_n: int = 4) -> str:
+    """
+    Build a self-contained interactive COLCAP comparison page.
+
+    All symbols' price series are embedded as JSON; the browser recomputes the
+    rebased-return overlay, correlation heatmap and stats table whenever the
+    selection of symbols changes — no server, GitHub-Pages friendly.
+    """
+    ann_factor   = 52 if interval == "1wk" else 252
+    interval_lbl = "Weekly" if interval == "1wk" else "Daily"
+    symbols      = payload["symbols"]
+    default_syms = symbols[:default_n]
+
+    data_json  = json.dumps(payload).replace("</", "<\\/")
+    colors_json = json.dumps(COMPARE_COLORS)
+    default_json = json.dumps(default_syms)
+
+    chips = "".join(
+        f'<button class="chip" data-sym="{s}" onclick="toggleSym(this)">{s}</button>'
+        for s in symbols
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COLCAP Compare — {EXCHANGE}</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {{
+      --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+      --text:#e6edf3;--text2:#8b949e;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--radius:8px;
+    }}
+    *{{box-sizing:border-box;margin:0;padding:0;}}
+    body{{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;}}
+    .header{{background:var(--bg2);border-bottom:1px solid var(--border);padding:18px 24px;}}
+    .header h1{{font-size:20px;}}
+    .header p{{color:var(--text2);font-size:12px;margin-top:4px;}}
+    .controls{{padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg2);}}
+    .controls-label{{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;}}
+    .chips{{display:flex;flex-wrap:wrap;gap:8px;}}
+    .chip{{background:var(--bg3);border:1px solid var(--border);color:var(--text2);
+      padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;}}
+    .chip:hover{{border-color:var(--text2);color:var(--text);}}
+    .chip.active{{background:var(--blue);color:#000;border-color:var(--blue);}}
+    .chip-actions{{margin-top:10px;display:flex;gap:8px;}}
+    .chip-actions button{{background:none;border:1px solid var(--border);color:var(--text2);
+      padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;}}
+    .chip-actions button:hover{{color:var(--text);border-color:var(--text2);}}
+    .section{{padding:20px 24px;}}
+    .chart-card{{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;}}
+    .chart-row{{display:grid;grid-template-columns:1fr 1fr;gap:16px;}}
+    @media(max-width:900px){{.chart-row{{grid-template-columns:1fr;}}}}
+    table.cmp{{width:100%;border-collapse:collapse;font-size:13px;}}
+    table.cmp th{{text-align:right;padding:8px 12px;color:var(--text2);font-weight:600;font-size:11px;border-bottom:1px solid var(--border);}}
+    table.cmp th:first-child,table.cmp td:first-child{{text-align:left;}}
+    table.cmp td{{padding:8px 12px;border-bottom:1px solid var(--border);}}
+    table.cmp tr:last-child td{{border-bottom:none;}}
+    .pos{{color:var(--green);}} .neg{{color:var(--red);}}
+    .swatch{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle;}}
+    .empty{{text-align:center;color:var(--text2);padding:40px;}}
+    footer{{border-top:1px solid var(--border);padding:16px 24px;color:var(--text2);font-size:11px;text-align:center;}}
+    .card-title{{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;}}
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📊 COLCAP Compare</h1>
+  <p>{EXCHANGE} · Colombia · {CURRENCY} · {interval_lbl} · {period_label} · all data precalculated · select symbols below</p>
+</div>
+
+<div class="controls">
+  <div class="controls-label">Symbols ({len(symbols)} available)</div>
+  <div class="chips" id="chips">{chips}</div>
+  <div class="chip-actions">
+    <button onclick="selectAll()">Select all</button>
+    <button onclick="clearAll()">Clear</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="chart-card"><div id="overlay" style="height:420px;"></div></div>
+  <div class="chart-row">
+    <div class="chart-card"><div class="card-title">Return Correlation</div><div id="corr" style="height:360px;"></div></div>
+    <div class="chart-card"><div class="card-title">Summary</div><div id="stats"></div></div>
+  </div>
+</div>
+
+<footer>
+  Generated by <strong>sura_tracker.py --compare</strong> on {datetime.now().strftime('%Y-%m-%d %H:%M')} ·
+  Rebased to 100 at the first common date · Sharpe rf=0 · √{ann_factor} annualisation.
+</footer>
+
+<script>
+const DATA = {data_json};
+const COLORS = {colors_json};
+const ANN = Math.sqrt({ann_factor});
+const CUR = "{CURRENCY}";
+let selected = {default_json};
+
+const PLOT_CFG = {{responsive:true, displayModeBar:false}};
+const AXIS = {{gridcolor:'#30363d', zerolinecolor:'#30363d', color:'#8b949e'}};
+const LAYOUT_BASE = {{
+  paper_bgcolor:'#161b22', plot_bgcolor:'#161b22',
+  font:{{color:'#e6edf3', family:'Segoe UI, system-ui, sans-serif', size:12}},
+  margin:{{l:55,r:20,t:30,b:40}}, legend:{{bgcolor:'#161b22', bordercolor:'#30363d'}},
+  hovermode:'x unified'
+}};
+
+function colorFor(sym) {{ return COLORS[DATA.symbols.indexOf(sym) % COLORS.length]; }}
+function mean(a) {{ return a.reduce((x,y)=>x+y,0)/a.length; }}
+function std(a) {{ const m=mean(a); return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(a.length-1)); }}
+
+function pearson(a, b) {{
+  const ma=mean(a), mb=mean(b); let num=0, da=0, db=0;
+  for (let i=0;i<a.length;i++) {{ const x=a[i]-ma, y=b[i]-mb; num+=x*y; da+=x*x; db+=y*y; }}
+  return (da===0||db===0) ? 0 : num/Math.sqrt(da*db);
+}}
+
+// Indices where every selected symbol has a non-null close (common window).
+function commonMask(syms) {{
+  const out=[];
+  for (let i=0;i<DATA.dates.length;i++) {{
+    if (syms.every(s => DATA.series[s].close[i] != null)) out.push(i);
+  }}
+  return out;
+}}
+
+function rets(closes) {{
+  const r=[]; for (let i=1;i<closes.length;i++) r.push(closes[i]/closes[i-1]-1); return r;
+}}
+
+function render() {{
+  document.querySelectorAll('.chip').forEach(c =>
+    c.classList.toggle('active', selected.includes(c.dataset.sym)));
+
+  if (selected.length === 0) {{
+    Plotly.purge('overlay'); Plotly.purge('corr');
+    document.getElementById('overlay').innerHTML =
+      '<div class="empty">Select one or more symbols to compare.</div>';
+    document.getElementById('corr').innerHTML = '';
+    document.getElementById('stats').innerHTML = '';
+    return;
+  }}
+
+  const mask = commonMask(selected);
+  const dates = mask.map(i => DATA.dates[i]);
+
+  // ── Rebased overlay (=100 at first common date) ──
+  const traces = selected.map(s => {{
+    const c = mask.map(i => DATA.series[s].close[i]);
+    const base = c[0];
+    return {{x:dates, y:c.map(v => v/base*100), name:s, mode:'lines',
+             line:{{color:colorFor(s), width:1.8}}}};
+  }});
+  Plotly.react('overlay', traces, Object.assign({{}}, LAYOUT_BASE, {{
+    title:{{text:'Rebased Price (=100 at first common date)', font:{{size:13,color:'#8b949e'}}}},
+    xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{title:'Index'}},AXIS)
+  }}), PLOT_CFG);
+
+  // ── Correlation heatmap of returns ──
+  const retMap = {{}};
+  selected.forEach(s => retMap[s] = rets(mask.map(i => DATA.series[s].close[i])));
+  const z = selected.map(a => selected.map(b => +pearson(retMap[a], retMap[b]).toFixed(2)));
+  Plotly.react('corr', [{{
+    z:z, x:selected, y:selected, type:'heatmap', zmin:-1, zmax:1,
+    colorscale:[[0,'#f85149'],[0.5,'#21262d'],[1,'#3fb950']],
+    text:z, texttemplate:'%{{text}}', showscale:true
+  }}], Object.assign({{}}, LAYOUT_BASE, {{
+    xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{autorange:'reversed'}},AXIS)
+  }}), PLOT_CFG);
+
+  // ── Stats table ──
+  let rows = '';
+  selected.forEach(s => {{
+    const c = mask.map(i => DATA.series[s].close[i]);
+    const r = retMap[s];
+    const periodRet = (c[c.length-1]/c[0]-1)*100;
+    const vol = std(r)*ANN*100;
+    const sharpe = std(r)===0 ? NaN : mean(r)/std(r)*ANN;
+    const cls = periodRet>=0 ? 'pos' : 'neg';
+    rows += `<tr>
+      <td><span class="swatch" style="background:${{colorFor(s)}}"></span>${{s}}</td>
+      <td class="${{cls}}">${{periodRet>=0?'+':''}}${{periodRet.toFixed(1)}}%</td>
+      <td>${{vol.toFixed(1)}}%</td>
+      <td>${{isNaN(sharpe)?'—':sharpe.toFixed(2)}}</td>
+      <td>${{CUR}} ${{Math.round(c[c.length-1]).toLocaleString()}}</td>
+    </tr>`;
+  }});
+  document.getElementById('stats').innerHTML = `
+    <div style="font-size:11px;color:#8b949e;margin-bottom:8px;">Common window: ${{dates.length}} bars` +
+    (dates.length ? ` · ${{dates[0]}} → ${{dates[dates.length-1]}}` : '') + `</div>
+    <table class="cmp"><thead><tr>
+      <th>Symbol</th><th>Return</th><th>Ann. Vol</th><th>Sharpe</th><th>Last</th>
+    </tr></thead><tbody>${{rows}}</tbody></table>`;
+}}
+
+function toggleSym(btn) {{
+  const s = btn.dataset.sym;
+  selected = selected.includes(s) ? selected.filter(x=>x!==s) : [...selected, s];
+  render();
+}}
+function selectAll() {{ selected = [...DATA.symbols]; render(); }}
+function clearAll() {{ selected = []; render(); }}
+
+render();
+window.addEventListener('resize', () => {{ Plotly.Plots.resize('overlay'); Plotly.Plots.resize('corr'); }});
 </script>
 </body>
 </html>"""
@@ -1330,6 +1817,41 @@ def parse_period(period_str: str):
 # MAIN
 # ══════════════════════════════════════════════════════════════════
 
+def run_compare(args):
+    """Fetch every COLCAP symbol and write the interactive comparison page."""
+    try:
+        history_kwargs, period_label = parse_period(args.period)
+    except ValueError as e:
+        print(f"\n❌ Invalid --period: {e}")
+        sys.exit(1)
+
+    output_file    = args.output or "compare.html"
+    interval_label = "Weekly" if args.interval == "1wk" else "Daily"
+
+    print(f"\n{'═'*62}")
+    print(f"  COLCAP Compare — {len(BVC_SYMBOLS)} symbols")
+    print(f"  Period   : {args.period} ({period_label})  |  Interval: {args.interval} ({interval_label})")
+    print(f"  Output   : {output_file}")
+    print(f"{'═'*62}\n")
+
+    print("📡 Downloading all COLCAP symbols from Yahoo Finance…")
+    closes, companies = fetch_multi(history_kwargs, args.interval)
+    got = [c for c in closes.columns if closes[c].notna().any()]
+    print(f"  ✅ Data for {len(got)}/{len(BVC_SYMBOLS)} symbols: {'  '.join(got)}")
+    if not got:
+        print("\n❌ No price data returned for any symbol. Try again later.")
+        sys.exit(1)
+
+    payload = build_compare_payload(closes, companies)
+    html_content = build_compare_html(payload, period_label, args.interval)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    size_kb = os.path.getsize(output_file) / 1024
+    print(f"\n✅ Comparison page saved: {output_file}  ({size_kb:.0f} KB)")
+    print(f"\n  Open in browser: file://{os.path.abspath(output_file)}\n")
+
+
 def main():
     # Build the list of available symbols for the help text
     sym_list = "  ".join(sorted(BVC_SYMBOLS.keys()))
@@ -1381,7 +1903,16 @@ def main():
         "--no-news", action="store_true",
         help="Skip news fetching (faster, offline-friendly)"
     )
+    parser.add_argument(
+        "--compare", action="store_true",
+        help="Generate the interactive COLCAP comparison page (all symbols)"
+    )
     args = parser.parse_args()
+
+    # ── Compare mode: build the all-symbols comparison page and exit ──
+    if args.compare:
+        run_compare(args)
+        return
 
     # ── Resolve symbol ──────────────────────────────────────────
     sym_key = args.symbol.upper().strip()
@@ -1504,6 +2035,16 @@ def main():
         info = {}
         print("⚠️  Could not fetch info dict — using defaults.")
 
+    # ── Fundamentals (Yahoo) — skip for curated GRUPOSURA ────────
+    fundamentals = None
+    if not sym.get("has_fundamentals"):
+        print("🏦 Fetching fundamentals from Yahoo Finance…")
+        fundamentals = fetch_fundamentals(stock)
+        if fundamentals.get("available"):
+            print(f"  ✅ Fundamentals for {len(fundamentals['years'])} fiscal year(s).")
+        else:
+            print("  ℹ️  No fundamentals available on Yahoo for this ticker.")
+
     # ── News ────────────────────────────────────────────────────
     news_items = []
     if not args.no_news:
@@ -1517,7 +2058,7 @@ def main():
     html_content = build_html(df, info, period_label,
                               interval=args.interval,
                               news_items=news_items,
-                              sym=sym)
+                              sym=sym, fundamentals=fundamentals)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html_content)
@@ -1533,6 +2074,8 @@ def main():
     print(f"  Period ret  : {(df['Close'].iloc[-1]/df['Close'].iloc[0]-1)*100:+.1f}%")
     ann_f = np.sqrt(52) if args.interval == "1wk" else np.sqrt(252)
     print(f"  Ann. vol    : {df['Daily_Return'].std()*ann_f*100:.1f}%")
+    print(f"  Sharpe      : {sharpe_ratio(df['Daily_Return'], args.interval):.2f}")
+    print(f"  Max drawdown: {max_drawdown(df['Close'])*100:.1f}%")
     last_rsi  = df["RSI"].dropna().iloc[-1]
     rsi_note  = "Overbought" if last_rsi > 70 else ("Oversold" if last_rsi < 30 else "Neutral")
     print(f"  RSI (14)    : {last_rsi:.1f} → {rsi_note}")
