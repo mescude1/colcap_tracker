@@ -59,3 +59,16 @@ def test_compare_html_weekly_annualisation():
     payload = st.build_compare_payload(_closes(), {})
     html = st.build_compare_html(payload, "2 Years", "1wk")
     assert "Math.sqrt(52)" in html
+
+
+def test_compare_html_phase6_features():
+    payload = st.build_compare_payload(_closes(), {})
+    html = st.build_compare_html(payload, "2 Years", "1d")
+    # Drawdown overlay + rolling correlation containers
+    assert 'id="ddown"' in html
+    assert 'id="rollcorr"' in html
+    assert "function renderRollCorr" in html
+    # Shareable URL-hash state
+    assert "function applyHash" in html
+    assert "function updateHash" in html
+    assert "hashchange" in html

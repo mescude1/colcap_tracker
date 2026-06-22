@@ -23,7 +23,7 @@ resumes from the **Status checklist** below — find the first unchecked box.
 - [x] Phase 3 — CSV / JSON export button
 - [x] Phase 4 — COLCAP benchmark + beta
 - [x] Phase 5 — Dividends & corporate-actions tab
-- [ ] Phase 6 — Compare-page upgrades (overlays + shareable state)
+- [x] Phase 6 — Compare-page upgrades (overlays + shareable state)
 - [ ] Phase 7 — Alerts digest (`--alerts`) + workflow wiring
 - [ ] Phase 8 — Portfolio mode
 - [ ] Phase 9 — Package refactor

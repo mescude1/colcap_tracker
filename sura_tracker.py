@@ -2014,9 +2014,19 @@ def build_compare_html(payload: dict, period_label: str, interval: str,
 
 <div class="section">
   <div class="chart-card"><div id="overlay" style="height:420px;"></div></div>
+  <div class="chart-card"><div class="card-title">Drawdown from Peak (%)</div><div id="ddown" style="height:300px;"></div></div>
   <div class="chart-row">
     <div class="chart-card"><div class="card-title">Return Correlation</div><div id="corr" style="height:360px;"></div></div>
     <div class="chart-card"><div class="card-title">Summary</div><div id="stats"></div></div>
+  </div>
+  <div class="chart-card">
+    <div class="card-title">Rolling Correlation
+      <select id="rollwin" onchange="renderRollCorr()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;margin-left:8px;">
+        <option value="20">20</option><option value="30" selected>30</option>
+        <option value="60">60</option><option value="90">90</option>
+      </select> bars · pick exactly two symbols
+    </div>
+    <div id="rollcorr" style="height:300px;"></div>
   </div>
 </div>
 
@@ -2068,12 +2078,16 @@ function render() {{
   document.querySelectorAll('.chip').forEach(c =>
     c.classList.toggle('active', selected.includes(c.dataset.sym)));
 
+  updateHash();
+
   if (selected.length === 0) {{
-    Plotly.purge('overlay'); Plotly.purge('corr');
+    Plotly.purge('overlay'); Plotly.purge('corr'); Plotly.purge('ddown');
+    Plotly.purge('rollcorr');
     document.getElementById('overlay').innerHTML =
       '<div class="empty">Select one or more symbols to compare.</div>';
     document.getElementById('corr').innerHTML = '';
     document.getElementById('stats').innerHTML = '';
+    document.getElementById('rollcorr').innerHTML = '';
     return;
   }}
 
@@ -2090,6 +2104,17 @@ function render() {{
   Plotly.react('overlay', traces, Object.assign({{}}, LAYOUT_BASE, {{
     title:{{text:'Rebased Price (=100 at first common date)', font:{{size:13,color:'#8b949e'}}}},
     xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{title:'Index'}},AXIS)
+  }}), PLOT_CFG);
+
+  // ── Drawdown overlay (peak-to-trough %, per symbol over common window) ──
+  const ddTraces = selected.map(s => {{
+    const c = mask.map(i => DATA.series[s].close[i]);
+    let peak = -Infinity;
+    const dd = c.map(v => {{ peak = Math.max(peak, v); return (v/peak - 1)*100; }});
+    return {{x:dates, y:dd, name:s, mode:'lines', line:{{color:colorFor(s), width:1.5}}}};
+  }});
+  Plotly.react('ddown', ddTraces, Object.assign({{}}, LAYOUT_BASE, {{
+    xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{title:'Drawdown (%)', rangemode:'tozero'}},AXIS)
   }}), PLOT_CFG);
 
   // ── Correlation heatmap of returns ──
@@ -2127,6 +2152,53 @@ function render() {{
     <table class="cmp"><thead><tr>
       <th>Symbol</th><th>Return</th><th>Ann. Vol</th><th>Sharpe</th><th>Last</th>
     </tr></thead><tbody>${{rows}}</tbody></table>`;
+
+  renderRollCorr();
+}}
+
+function renderRollCorr() {{
+  const el = document.getElementById('rollcorr');
+  if (selected.length !== 2) {{
+    Plotly.purge('rollcorr');
+    el.innerHTML = '<div class="empty">Select exactly two symbols to see their rolling correlation.</div>';
+    return;
+  }}
+  el.innerHTML = '';
+  const win = parseInt(document.getElementById('rollwin').value, 10);
+  const mask = commonMask(selected);
+  const [a, b] = selected;
+  const ra = rets(mask.map(i => DATA.series[a].close[i]));
+  const rb = rets(mask.map(i => DATA.series[b].close[i]));
+  if (ra.length < win) {{
+    el.innerHTML = '<div class="empty">Not enough common history for this window.</div>';
+    return;
+  }}
+  const y = rollingCorr2(ra, rb, win);
+  const x = mask.slice(win).map(i => DATA.dates[i]);
+  Plotly.react('rollcorr', [{{x:x, y:y, mode:'lines', name:`${{a}} vs ${{b}}`,
+    line:{{color:'#58a6ff', width:1.8}}}}], Object.assign({{}}, LAYOUT_BASE, {{
+    title:{{text:`${{a}} vs ${{b}} · ${{win}}-bar rolling correlation`, font:{{size:13,color:'#8b949e'}}}},
+    xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{range:[-1,1]}},AXIS)
+  }}), PLOT_CFG);
+}}
+
+function rollingCorr2(a, b, win) {{
+  const out = [];
+  for (let i = win; i <= a.length; i++) out.push(+pearson(a.slice(i-win, i), b.slice(i-win, i)).toFixed(3));
+  return out;
+}}
+
+function applyHash() {{
+  const h = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
+  if (!h) return false;
+  const want = h.split(',').map(s => s.trim().toUpperCase()).filter(s => DATA.symbols.includes(s));
+  if (want.length) {{ selected = want; return true; }}
+  return false;
+}}
+
+function updateHash() {{
+  const target = '#' + selected.join(',');
+  if (location.hash !== target) history.replaceState(null, '', selected.length ? target : location.pathname);
 }}
 
 function toggleSym(btn) {{
@@ -2146,8 +2218,12 @@ function exportCompare(fmt) {{
   exportTable({{columns: cols, rows: rows}}, 'colcap_compare', fmt);
 }}
 
+applyHash();           // restore a shared selection from the URL, if present
 render();
-window.addEventListener('resize', () => {{ Plotly.Plots.resize('overlay'); Plotly.Plots.resize('corr'); }});
+window.addEventListener('hashchange', () => {{ if (applyHash()) render(); }});
+window.addEventListener('resize', () => {{
+  ['overlay','corr','ddown','rollcorr'].forEach(id => {{ try {{ Plotly.Plots.resize(id); }} catch(e) {{}} }});
+}});
 </script>
 </body>
 </html>"""
