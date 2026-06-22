@@ -17,7 +17,12 @@ resumes from the **Status checklist** below — find the first unchecked box.
    reuse pandas/numpy/plotly/yfinance; pytest is the only dev dep), output stays
    static HTML (GitHub Pages), every new pure function gets a unit test.
 
-## Status checklist
+## Status checklist — Round 2 (registry + signals + sidebar)
+- [x] Phase 10 — Expand COLCAP registry (14 → 33 Yahoo-verified symbols; per-symbol currency; BANCOLOMBIA via CIB USD ADR)
+- [ ] Phase 11 — Signals engine + BUY/SELL verdict (bvc/signals.py); wired into alerts page
+- [ ] Phase 12 — Signals sidebar on the per-symbol dashboard
+
+## Status checklist — Round 1
 - [x] Phase 1 — Fetch resilience, caching & resume
 - [x] Phase 2 — Ticker resolver & coverage guardrails
 - [x] Phase 3 — CSV / JSON export button

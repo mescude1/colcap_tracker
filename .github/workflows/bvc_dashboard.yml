@@ -37,16 +37,34 @@ on:
           - PFGRUPSURA
           - ECOPETROL
           - BANCOLOMBIA
-          - PFBCOLOMBIA
           - BOGOTA
           - CORFICOLCF
+          - PFCORFICOL
           - PFAVAL
+          - GRUPOAVAL
+          - DAVIVIENDA
+          - OCCIDENTE
+          - BBVACOL
           - GEB
           - ISA
+          - CELSIA
+          - PROMIGAS
+          - TERPEL
+          - CANACOL
           - GRUPOARGOS
+          - PFGRUPOARG
           - CEMARGOS
+          - PFCEMARGOS
           - NUTRESA
           - EXITO
+          - MINEROS
+          - CONCONCRETO
+          - ENKA
+          - FABRICATO
+          - ETB
+          - BVC
+          - ELCONDOR
+          - PEI
 
       period:
         description: "Data period  (ytd / 1mo / 3mo / 6mo / 1y / 2y / 5y / max / 4wk / 26wk …)"

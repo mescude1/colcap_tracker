@@ -363,6 +363,133 @@ BVC_SYMBOLS = {
         "keywords": ["almacenes éxito", "almacenes exito", "exito supermercado",
                      "grupo casino colombia", "carulla", "surtimax"],
     },
+    # ── Banking (additional) ────────────────────────────────────
+    "GRUPOAVAL": {
+        "yahoo": "GRUPOAVAL.CL", "company": "Grupo Aval Acciones y Valores S.A. (Ordinaria)",
+        "sector": "Financial Services", "has_fundamentals": False,
+        "search_name": "Grupo Aval acciones ordinarias",
+        "keywords": ["grupo aval", "grupoaval", "aval acciones"],
+    },
+    "DAVIVIENDA": {
+        "yahoo": "PFDAVVNDA.CL", "company": "Banco Davivienda S.A. — Preferred",
+        "sector": "Banking", "has_fundamentals": False,
+        "search_name": "Davivienda banco preferencial",
+        "keywords": ["davivienda", "pfdavvnda", "banco davivienda"],
+    },
+    "BANCOLOMBIA": {
+        # BANCOLOMBIA.CL is delisted on Yahoo; the only live source is the NYSE
+        # ADR (CIB), priced in USD — flagged here so the dashboard labels it.
+        "yahoo": "CIB", "currency": "USD",
+        "company": "Bancolombia S.A. — NYSE ADR (USD)",
+        "sector": "Banking", "has_fundamentals": False,
+        "search_name": "Bancolombia banco",
+        "keywords": ["bancolombia", "grupo bancolombia", "nequi", "banistmo", "cib"],
+    },
+    # ── Utilities / Energy (additional) ─────────────────────────
+    "CELSIA": {
+        "yahoo": "CELSIA.CL", "company": "Celsia S.A. E.S.P.",
+        "sector": "Utilities", "has_fundamentals": False,
+        "search_name": "Celsia energía Colombia",
+        "keywords": ["celsia", "grupo argos celsia"],
+    },
+    "PROMIGAS": {
+        "yahoo": "PROMIGAS.CL", "company": "Promigas S.A. E.S.P.",
+        "sector": "Utilities / Gas", "has_fundamentals": False,
+        "search_name": "Promigas gas natural Colombia",
+        "keywords": ["promigas", "gas natural promigas"],
+    },
+    "TERPEL": {
+        "yahoo": "TERPEL.CL", "company": "Organización Terpel S.A.",
+        "sector": "Oil & Gas Retail", "has_fundamentals": False,
+        "search_name": "Terpel combustibles Colombia",
+        "keywords": ["terpel", "organización terpel", "organizacion terpel"],
+    },
+    "CANACOL": {
+        "yahoo": "CNEC.CL", "company": "Canacol Energy Ltd.",
+        "sector": "Oil & Gas", "has_fundamentals": False,
+        "search_name": "Canacol Energy gas Colombia",
+        "keywords": ["canacol", "canacol energy", "cnec"],
+    },
+    # ── Materials / Industrials (additional) ────────────────────
+    "PFGRUPOARG": {
+        "yahoo": "PFGRUPOARG.CL", "company": "Grupo Argos S.A. — Preferred",
+        "sector": "Diversified Holding", "has_fundamentals": False,
+        "search_name": "Grupo Argos preferencial",
+        "keywords": ["grupo argos", "pfgrupoarg", "argos"],
+    },
+    "PFCEMARGOS": {
+        "yahoo": "PFCEMARGOS.CL", "company": "Cementos Argos S.A. — Preferred",
+        "sector": "Materials / Cement", "has_fundamentals": False,
+        "search_name": "Cementos Argos preferencial",
+        "keywords": ["cementos argos", "pfcemargos", "argos cemento"],
+    },
+    "MINEROS": {
+        "yahoo": "MINEROS.CL", "company": "Mineros S.A.",
+        "sector": "Gold Mining", "has_fundamentals": False,
+        "search_name": "Mineros oro Colombia",
+        "keywords": ["mineros", "mineros sa", "oro mineros"],
+    },
+    "CONCONCRETO": {
+        "yahoo": "CONCONCRET.CL", "company": "Constructora Conconcreto S.A.",
+        "sector": "Construction", "has_fundamentals": False,
+        "search_name": "Conconcreto construcción Colombia",
+        "keywords": ["conconcreto", "constructora conconcreto"],
+    },
+    "ENKA": {
+        "yahoo": "ENKA.CL", "company": "Enka de Colombia S.A.",
+        "sector": "Materials", "has_fundamentals": False,
+        "search_name": "Enka de Colombia",
+        "keywords": ["enka", "enka de colombia"],
+    },
+    "FABRICATO": {
+        "yahoo": "FABRICATO.CL", "company": "Fabricato S.A.",
+        "sector": "Textiles", "has_fundamentals": False,
+        "search_name": "Fabricato textil Colombia",
+        "keywords": ["fabricato", "textiles fabricato"],
+    },
+    # ── Telecom / Exchange (additional) ─────────────────────────
+    "ETB": {
+        "yahoo": "ETB.CL", "company": "Empresa de Telecomunicaciones de Bogotá S.A.",
+        "sector": "Telecom", "has_fundamentals": False,
+        "search_name": "ETB telecomunicaciones Bogotá",
+        "keywords": ["etb", "empresa de telecomunicaciones de bogotá", "telecomunicaciones bogota"],
+    },
+    "BVC": {
+        "yahoo": "BVC.CL", "company": "Bolsa de Valores de Colombia S.A.",
+        "sector": "Financial Services", "has_fundamentals": False,
+        "search_name": "Bolsa de Valores de Colombia BVC",
+        "keywords": ["bolsa de valores de colombia", "bvc"],
+    },
+    "OCCIDENTE": {
+        "yahoo": "OCCIDENTE.CL", "company": "Banco de Occidente S.A.",
+        "sector": "Banking", "has_fundamentals": False,
+        "search_name": "Banco de Occidente Grupo Aval",
+        "keywords": ["banco de occidente", "occidente", "grupo aval"],
+    },
+    "BBVACOL": {
+        "yahoo": "BBVACOL.CL", "company": "BBVA Colombia S.A.",
+        "sector": "Banking", "has_fundamentals": False,
+        "search_name": "BBVA Colombia banco",
+        "keywords": ["bbva colombia", "bbvacol", "bbva"],
+    },
+    "PFCORFICOL": {
+        "yahoo": "PFCORFICOL.CL", "company": "Corporación Financiera Colombiana S.A. — Preferred",
+        "sector": "Financial Services", "has_fundamentals": False,
+        "search_name": "Corficolombiana preferencial",
+        "keywords": ["corficolombiana", "pfcorficol", "corporación financiera colombiana"],
+    },
+    "ELCONDOR": {
+        "yahoo": "ELCONDOR.CL", "company": "Constructora El Cóndor S.A.",
+        "sector": "Construction", "has_fundamentals": False,
+        "search_name": "Constructora El Cóndor infraestructura",
+        "keywords": ["el cóndor", "el condor", "constructora el condor", "elcondor"],
+    },
+    "PEI": {
+        "yahoo": "PEI.CL", "company": "PEI — Patrimonio Estrategias Inmobiliarias",
+        "sector": "Real Estate", "has_fundamentals": False,
+        "search_name": "PEI patrimonio estrategias inmobiliarias",
+        "keywords": ["pei", "patrimonio estrategias inmobiliarias", "pei asset management"],
+    },
 }
 
 EXCHANGE = "BVC"
@@ -2590,8 +2717,9 @@ def main():
     # ── Resolve symbol ──────────────────────────────────────────
     sym_key = args.symbol.upper().strip()
     if sym_key in BVC_SYMBOLS:
-        sym = {**BVC_SYMBOLS[sym_key], "bvc": sym_key,
-               "exchange": EXCHANGE, "currency": CURRENCY}
+        meta = BVC_SYMBOLS[sym_key]
+        sym = {**meta, "bvc": sym_key, "exchange": EXCHANGE,
+               "currency": meta.get("currency", CURRENCY)}  # honour per-symbol currency
     else:
         print(f"  ⚠️  '{sym_key}' not in BVC_SYMBOLS registry.")
         print(f"  ℹ️  Attempting {sym_key}.CL on Yahoo Finance…")
