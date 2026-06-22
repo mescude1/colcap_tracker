@@ -75,6 +75,20 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 
+# Pure building blocks extracted into the bvc package, re-exported here so the
+# public API (sura_tracker.X) and the CLI entry point stay unchanged.
+from bvc import indicators, period, sentiment  # noqa: F401
+from bvc.indicators import (  # noqa: F401
+    calc_rsi, calc_macd, calc_bollinger, calc_atr, calc_drawdown,
+    ann_factor_for, sharpe_ratio, sortino_ratio, max_drawdown,
+    calc_beta, tracking_error, calc_indicators, monthly_returns,
+)
+from bvc.period import parse_period  # noqa: F401
+from bvc.sentiment import (  # noqa: F401
+    BULLISH_WORDS, BEARISH_WORDS, classify_sentiment,
+    _parse_pub_date, _relevance_score,
+)
+
 
 # ══════════════════════════════════════════════════════════════════
 # PRICE CACHE  (resilience against Yahoo rate-limits + offline reruns)
@@ -390,143 +404,8 @@ SUBSIDIARIES = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════
-# TECHNICAL INDICATOR FUNCTIONS
-# ══════════════════════════════════════════════════════════════════
-
-def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain  = delta.clip(lower=0).rolling(period).mean()
-    loss  = (-delta.clip(upper=0)).rolling(period).mean()
-    rs    = gain / loss
-    return 100 - (100 / (1 + rs))
-
-
-def calc_macd(series: pd.Series, fast=12, slow=26, signal=9):
-    ema_fast    = series.ewm(span=fast, adjust=False).mean()
-    ema_slow    = series.ewm(span=slow, adjust=False).mean()
-    macd_line   = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram   = macd_line - signal_line
-    return macd_line, signal_line, histogram
-
-
-def calc_bollinger(series: pd.Series, window=20, num_std=2):
-    mid   = series.rolling(window).mean()
-    std   = series.rolling(window).std()
-    upper = mid + num_std * std
-    lower = mid - num_std * std
-    return upper, mid, lower
-
-
-def calc_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average True Range — volatility in price units (Wilder's smoothing via EMA)."""
-    high, low, close = df["High"], df["Low"], df["Close"]
-    prev_close = close.shift(1)
-    true_range = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    return true_range.ewm(alpha=1 / period, adjust=False).mean()
-
-
-def calc_drawdown(close: pd.Series) -> pd.Series:
-    """Drawdown from the running peak, as a fraction (0 = at peak, -0.2 = 20% below)."""
-    running_max = close.cummax()
-    return close / running_max - 1.0
-
-
-def ann_factor_for(interval: str) -> float:
-    """Annualisation factor for return series at the given bar interval."""
-    return np.sqrt(52) if interval == "1wk" else np.sqrt(252)
-
-
-def sharpe_ratio(returns: pd.Series, interval: str = "1d", rf: float = 0.0) -> float:
-    """Annualised Sharpe ratio of a periodic-return series (rf = per-period risk-free)."""
-    r = returns.dropna()
-    if r.empty or r.std() == 0:
-        return float("nan")
-    return (r.mean() - rf) / r.std() * ann_factor_for(interval)
-
-
-def sortino_ratio(returns: pd.Series, interval: str = "1d", rf: float = 0.0) -> float:
-    """Annualised Sortino ratio — like Sharpe but penalising only downside deviation."""
-    r = returns.dropna()
-    downside = r[r < rf]
-    if r.empty or downside.empty or downside.std() == 0:
-        return float("nan")
-    return (r.mean() - rf) / downside.std() * ann_factor_for(interval)
-
-
-def max_drawdown(close: pd.Series) -> float:
-    """Maximum peak-to-trough drawdown as a fraction (e.g. -0.34 for -34%)."""
-    dd = calc_drawdown(close.dropna())
-    return float(dd.min()) if not dd.empty else float("nan")
-
-
-def calc_beta(stock_ret: pd.Series, index_ret: pd.Series) -> float:
-    """Beta = cov(stock, index) / var(index) over aligned (inner-join) returns."""
-    joined = pd.concat([stock_ret, index_ret], axis=1).dropna()
-    if len(joined) < 2:
-        return float("nan")
-    var = joined.iloc[:, 1].var()
-    if var == 0:
-        return float("nan")
-    return float(joined.cov().iloc[0, 1] / var)
-
-
-def tracking_error(stock_ret: pd.Series, index_ret: pd.Series,
-                   interval: str = "1d") -> float:
-    """Annualised tracking error (%) — std of the active (stock − index) return."""
-    diff = (stock_ret - index_ret).dropna()
-    if diff.empty:
-        return float("nan")
-    return float(diff.std() * ann_factor_for(interval) * 100)
-
-
-def calc_indicators(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
-    """Calculate technical indicators, adapting windows and annualisation to interval."""
-    if interval == "1wk":
-        vol_window = 13       # ~13 weeks ≈ 1 quarter
-        ann_factor = np.sqrt(52)
-    else:
-        vol_window = 21       # ~21 trading days ≈ 1 month
-        ann_factor = np.sqrt(252)
-
-    close = df["Close"]
-    df["SMA_20"]  = close.rolling(20).mean()
-    df["SMA_50"]  = close.rolling(50).mean()
-    df["SMA_200"] = close.rolling(200).mean()
-    df["RSI"]     = calc_rsi(close)
-    df["MACD"], df["Signal"], df["Histogram"] = calc_macd(close)
-    df["BB_Upper"], df["BB_Mid"], df["BB_Lower"] = calc_bollinger(close)
-    df["ATR"]          = calc_atr(df)
-    df["Daily_Return"] = close.pct_change()
-    df["Cum_Return"]   = (1 + df["Daily_Return"]).cumprod() - 1
-    df["Rolling_Vol"]  = df["Daily_Return"].rolling(vol_window).std() * ann_factor * 100
-    df["Drawdown"]     = calc_drawdown(close)
-    return df
-
-
-# ══════════════════════════════════════════════════════════════════
-# MONTHLY HEATMAP DATA
-# ══════════════════════════════════════════════════════════════════
-
-def monthly_returns(df: pd.DataFrame):
-    monthly = df["Close"].resample("ME").last().pct_change() * 100
-    monthly = monthly.dropna()
-    years   = sorted(monthly.index.year.unique())
-    months  = list(range(1, 13))
-    z = []
-    for yr in years:
-        row = []
-        for mo in months:
-            mask = (monthly.index.year == yr) & (monthly.index.month == mo)
-            vals = monthly[mask]
-            row.append(round(vals.iloc[0], 2) if len(vals) > 0 else None)
-        z.append(row)
-    return years, months, z
+# Technical-indicator + risk math and monthly_returns now live in
+# bvc/indicators.py and are re-exported via the imports at the top of this file.
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1072,71 +951,8 @@ def load_extra_sources(filepath: str) -> list:
 # NEWS — SENTIMENT CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════
 
-BULLISH_WORDS = {
-    # English
-    "gain","gains","rise","rises","rose","rally","rallies","surge","surges","soar","soars",
-    "grow","growth","profit","profits","beat","beats","exceed","exceeds","record",
-    "strong","strength","positive","upgrade","buy","outperform","dividend","recovery",
-    "recovers","higher","increase","increases","boost","opportunity","bullish","expansion",
-    "improving","improved","acceleration","upside","rebound","inflow","inflows",
-    # Spanish
-    "sube","subida","alza","alzas","gana","ganancias","crece","crecimiento","utilidad",
-    "utilidades","beneficio","beneficios","supera","fuerte","positivo","dividendo",
-    "recuperación","recupera","aumenta","incremento","mejora","expansión","oportunidad",
-    "rebote","entrada","flujos","alcista","record","máximo",
-}
-
-BEARISH_WORDS = {
-    # English
-    "loss","losses","fall","falls","fell","drop","drops","decline","declines","plunge",
-    "miss","misses","weak","weakness","sell","downgrade","underperform","cut","cuts",
-    "risk","risks","concern","concerns","debt","default","down","lower","crash","fear",
-    "warning","decrease","uncertainty","bearish","contraction","deteriorating","pressure",
-    "headwinds","outflow","outflows","deficit","inflation","recession","layoff","layoffs",
-    # Spanish
-    "baja","bajada","cae","caída","pierde","pérdida","riesgo","deuda","crisis","declive",
-    "descenso","disminuye","reducción","preocupación","débil","negativo","incertidumbre",
-    "presión","contracción","salida","déficit","inflación","recesión","bajista","mínimo",
-    "desempleo","recorte",
-}
-
-
-def classify_sentiment(text: str) -> str:
-    """Score a headline+summary as bullish, bearish, or neutral via keyword matching."""
-    words      = set(re.findall(r"[a-záéíóúñü]+", text.lower()))
-    bull_score = len(words & BULLISH_WORDS)
-    bear_score = len(words & BEARISH_WORDS)
-    if bull_score > bear_score:
-        return "bullish"
-    if bear_score > bull_score:
-        return "bearish"
-    return "neutral"
-
-
-def _parse_pub_date(raw) -> str:
-    """Parse various date formats (Unix timestamp / ISO 8601 / RFC 2822) → YYYY-MM-DD HH:MM."""
-    if not raw:
-        return ""
-    if str(raw).isdigit():
-        try:
-            return datetime.fromtimestamp(int(raw)).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return ""
-    if "T" in str(raw):
-        try:
-            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            pass
-    try:
-        return parsedate_to_datetime(str(raw)).strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return str(raw)[:16]
-
-
-def _relevance_score(text: str, keywords: list) -> int:
-    """Count how many company keywords appear in the given text (case-insensitive)."""
-    t = text.lower()
-    return sum(1 for kw in keywords if kw in t)
+# Sentiment words, classify_sentiment, _parse_pub_date and _relevance_score now
+# live in bvc/sentiment.py and are re-exported via the imports at the top.
 
 
 def fetch_news(stock, sym: dict, extra_feeds: list = None) -> list:
@@ -2599,55 +2415,7 @@ def run_portfolio(args):
 # PERIOD PARSING
 # ══════════════════════════════════════════════════════════════════
 
-_NATIVE_PERIODS = {"1d","5d","1mo","3mo","6mo","1y","2y","3y","5y","10y","ytd","max"}
-
-def parse_period(period_str: str):
-    """
-    Parse a flexible period string → (history_kwargs, display_label).
-
-    Accepted formats
-    ────────────────
-    Native yfinance  →  1d  5d  1mo  3mo  6mo  1y  2y  3y  5y  10y  ytd  max
-    Weeks (custom)   →  1wk  2wk  4wk  6wk  8wk  12wk  26wk  52wk  …
-    Months (custom)  →  any Xmo not in native list  (2mo  4mo  9mo  18mo  …)
-    """
-    s = period_str.strip().lower()
-
-    if s in _NATIVE_PERIODS:
-        label_map = {
-            "1d":"1 Day","5d":"5 Days","1mo":"1 Month","3mo":"3 Months",
-            "6mo":"6 Months","1y":"1 Year","2y":"2 Years","3y":"3 Years",
-            "5y":"5 Years","10y":"10 Years","ytd":"YTD","max":"Max",
-        }
-        return {"period": s}, label_map.get(s, s.upper())
-
-    # Custom weeks: Xwk
-    m = re.fullmatch(r"(\d+)wk", s)
-    if m:
-        weeks = int(m.group(1))
-        if weeks < 1:
-            raise ValueError("Weeks must be ≥ 1")
-        from datetime import timedelta
-        start = (datetime.now() - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
-        return {"start": start}, f"{weeks} Week{'s' if weeks > 1 else ''}"
-
-    # Custom months: Xmo (non-native)
-    m = re.fullmatch(r"(\d+)mo", s)
-    if m:
-        months = int(m.group(1))
-        if months < 1:
-            raise ValueError("Months must be ≥ 1")
-        from datetime import timedelta
-        start = (datetime.now() - timedelta(days=round(months * 30.44))).strftime("%Y-%m-%d")
-        return {"start": start}, f"{months} Month{'s' if months > 1 else ''}"
-
-    raise ValueError(
-        f"Unrecognised period '{period_str}'.\n"
-        "  Weeks  : 1wk, 2wk, 4wk, 6wk, 8wk, 12wk, 26wk, 52wk …\n"
-        "  Months : 1mo, 2mo, 3mo, 6mo, 9mo, 12mo, 18mo …\n"
-        "  Years  : 1y, 2y, 3y, 5y, 10y\n"
-        "  Other  : 1d, 5d, ytd, max"
-    )
+# parse_period now lives in bvc/period.py and is re-exported via the top imports.
 
 
 # ══════════════════════════════════════════════════════════════════

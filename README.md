@@ -82,6 +82,16 @@ python sura_tracker.py --sources sources_example.txt
 # Interactive comparison of ALL COLCAP symbols in one page
 python sura_tracker.py --compare
 python sura_tracker.py --compare --period 1y --interval 1wk --output compare.html
+
+# Signal scan across all COLCAP symbols → alerts.html
+python sura_tracker.py --alerts
+
+# Weighted portfolio page (editable weights, blended risk/return) → portfolio.html
+python sura_tracker.py --portfolio "GRUPOSURA:0.4,ECOPETROL:0.3,ISA:0.3"
+
+# Cache controls (resilient to Yahoo rate-limits) and benchmark toggle
+python sura_tracker.py --symbol ISA --cache-ttl 120
+python sura_tracker.py --symbol ISA --no-cache --no-benchmark
 ```
 
 The generated HTML file opens in any browser — no server needed.
@@ -102,13 +112,32 @@ Symbols with no Yahoo Finance data for the chosen period are skipped automatical
 
 ---
 
+## 🔔 Alerts & 📦 Portfolio
+
+- **`--alerts`** scans every COLCAP symbol for mechanical signals (RSI overbought/
+  oversold, MACD crossovers, 52-week highs/lows, golden/death cross) and writes a
+  one-page digest. Wired into the hourly workflow.
+- **`--portfolio "SYM:weight,…"`** builds an interactive page where you edit weights
+  in the browser and see blended cumulative return, annualised volatility, Sharpe,
+  and covariance-based **contribution-to-risk** recompute live.
+
 ## 📈 Per-symbol analytics
 
 Each dashboard includes candlesticks + Bollinger/MAs, volume, RSI, MACD, **ATR(14)**,
-cumulative returns, **drawdown-from-peak**, return distribution, rolling volatility and
-a monthly heatmap. Header metric cards include **Sharpe ratio** and **max drawdown**.
-Fundamentals are pulled **live from Yahoo Finance** for any ticker (GRUPOSURA keeps its
-hand-curated FY2022–2024 data).
+cumulative returns (with a **COLCAP benchmark overlay** + **beta** / excess-return
+cards), **drawdown-from-peak**, return distribution, rolling volatility and a monthly
+heatmap. Header metric cards include **Sharpe ratio** and **max drawdown**. There are
+**Fundamentals** and **Dividends** tabs pulled live from Yahoo Finance (GRUPOSURA keeps
+its hand-curated FY2022–2024 data), and a **CSV/JSON export** button.
+
+A local price **cache** (`.cache/`) makes reruns fast and tolerates Yahoo rate-limits:
+a throttled run renders from cached data and the next run refetches what's missing.
+
+## 🗂 Code layout
+
+Pure building blocks live in the **`bvc/`** package (`indicators`, `period`,
+`sentiment`); fetch/cache/resolver, Plotly rendering, and the CLI stay in
+`sura_tracker.py`, which re-exports the package API so the entry point is unchanged.
 
 ---
 
@@ -116,7 +145,7 @@ hand-curated FY2022–2024 data).
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                 # 54 offline unit + functional tests, no network needed
+pytest                 # 104 offline unit + functional tests, no network needed
 ```
 
 ---

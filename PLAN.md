@@ -26,7 +26,7 @@ resumes from the **Status checklist** below — find the first unchecked box.
 - [x] Phase 6 — Compare-page upgrades (overlays + shareable state)
 - [x] Phase 7 — Alerts digest (`--alerts`) + workflow wiring
 - [x] Phase 8 — Portfolio mode
-- [ ] Phase 9 — Package refactor
+- [x] Phase 9 — Package refactor (pure modules extracted to `bvc/`; cache/render/CLI kept in entry module)
 
 ---
 
