@@ -2350,6 +2350,252 @@ def build_alerts_html(results: list, period_label: str, interval: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
+# PORTFOLIO MODE  (weights, blended risk/return, contribution-to-risk)
+# ══════════════════════════════════════════════════════════════════
+
+def parse_weights(spec: str) -> dict:
+    """
+    Parse "GRUPOSURA:0.4,ECOPETROL:0.3,ISA:0.3" → normalized {symbol: weight}.
+
+    Weights are summed per symbol and rescaled to sum to 1. Raises ValueError on
+    malformed input, negative weights, or a zero total.
+    """
+    weights = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"Bad weight entry '{part}' (expected SYMBOL:weight)")
+        sym, w = part.split(":", 1)
+        sym = sym.strip().upper()
+        try:
+            w = float(w)
+        except ValueError:
+            raise ValueError(f"Bad weight number in '{part}'")
+        if w < 0:
+            raise ValueError("Weights must be ≥ 0")
+        weights[sym] = weights.get(sym, 0.0) + w
+    if not weights:
+        raise ValueError("No weights given")
+    total = sum(weights.values())
+    if total <= 0:
+        raise ValueError("Weights sum to zero")
+    return {s: w / total for s, w in weights.items()}
+
+
+def build_portfolio_payload(closes: pd.DataFrame, weights: dict, companies: dict) -> dict:
+    """Inner-join closes for the weighted symbols and emit a JSON payload."""
+    cols = [s for s in weights if s in closes.columns]
+    closes = closes[cols].dropna().sort_index()
+    series = {
+        s: {"name": companies.get(s, s),
+            "close": [round(float(v), 4) for v in closes[s]]}
+        for s in closes.columns
+    }
+    return {
+        "dates":   [d.strftime("%Y-%m-%d") for d in closes.index],
+        "symbols": list(closes.columns),
+        "weights": {s: round(weights[s], 4) for s in closes.columns},
+        "series":  series,
+    }
+
+
+def build_portfolio_html(payload: dict, period_label: str, interval: str) -> str:
+    """Interactive portfolio page: editable weights → blended return, vol, Sharpe,
+    and contribution-to-risk, all recomputed client-side."""
+    ann_factor   = 52 if interval == "1wk" else 252
+    interval_lbl = "Weekly" if interval == "1wk" else "Daily"
+    symbols      = payload["symbols"]
+    data_json    = json.dumps(payload).replace("</", "<\\/")
+    colors_json  = json.dumps(COMPARE_COLORS)
+
+    inputs = "".join(
+        f'<div class="wrow"><span class="wsym" style="color:{COMPARE_COLORS[i % len(COMPARE_COLORS)]}">{s}</span>'
+        f'<input class="winput" data-sym="{s}" type="number" step="0.05" min="0" '
+        f'value="{payload["weights"][s]}" oninput="recompute()"></div>'
+        for i, s in enumerate(symbols)
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COLCAP Portfolio — {EXCHANGE}</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {{ --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+      --text:#e6edf3;--text2:#8b949e;--blue:#58a6ff;--green:#3fb950;--red:#f85149;--radius:8px; }}
+    *{{box-sizing:border-box;margin:0;padding:0;}}
+    body{{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;}}
+    .header{{background:var(--bg2);border-bottom:1px solid var(--border);padding:18px 24px;}}
+    .header h1{{font-size:20px;}} .header p{{color:var(--text2);font-size:12px;margin-top:4px;}}
+    .layout{{display:grid;grid-template-columns:240px 1fr;gap:16px;padding:20px 24px;}}
+    @media(max-width:800px){{.layout{{grid-template-columns:1fr;}}}}
+    .panel{{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}}
+    .panel h3{{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;}}
+    .wrow{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
+    .wsym{{font-weight:700;font-size:13px;}}
+    .winput{{width:80px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;}}
+    .chart-card{{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;}}
+    .card-title{{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;}}
+    .stat-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;}}
+    .stat{{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:12px;}}
+    .stat .lbl{{font-size:11px;color:var(--text2);text-transform:uppercase;}}
+    .stat .val{{font-size:18px;font-weight:700;margin-top:4px;}}
+    footer{{border-top:1px solid var(--border);padding:16px 24px;color:var(--text2);font-size:11px;text-align:center;}}
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>📦 COLCAP Portfolio</h1>
+  <p>{EXCHANGE} · Colombia · {CURRENCY} · {interval_lbl} · {period_label} · edit weights to recompute live</p>
+</div>
+<div class="layout">
+  <div class="panel">
+    <h3>Weights (auto-normalised)</h3>
+    {inputs}
+    <div style="margin-top:10px;font-size:11px;color:var(--text2);" id="wsum"></div>
+  </div>
+  <div>
+    <div class="chart-card"><div class="stat-grid" id="stats"></div></div>
+    <div class="chart-card"><div class="card-title">Cumulative Portfolio Return</div><div id="cum" style="height:340px;"></div></div>
+    <div class="chart-card"><div class="card-title">Contribution to Risk</div><div id="risk" style="height:300px;"></div></div>
+  </div>
+</div>
+<footer>Generated by <strong>sura_tracker.py --portfolio</strong> on {datetime.now().strftime('%Y-%m-%d %H:%M')} · rf=0 · √{ann_factor} annualisation.</footer>
+
+<script>
+const DATA = {data_json};
+const COLORS = {colors_json};
+const ANN = Math.sqrt({ann_factor});
+const CUR = "{CURRENCY}";
+const PLOT_CFG = {{responsive:true, displayModeBar:false}};
+const AXIS = {{gridcolor:'#30363d', zerolinecolor:'#30363d', color:'#8b949e'}};
+const LAYOUT_BASE = {{paper_bgcolor:'#161b22', plot_bgcolor:'#161b22',
+  font:{{color:'#e6edf3', family:'Segoe UI, system-ui, sans-serif', size:12}},
+  margin:{{l:55,r:20,t:20,b:40}}, hovermode:'x unified'}};
+
+function mean(a) {{ return a.reduce((x,y)=>x+y,0)/a.length; }}
+function std(a) {{ const m=mean(a); return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(a.length-1)); }}
+function cov(a,b) {{ const ma=mean(a),mb=mean(b); let s=0;
+  for(let i=0;i<a.length;i++) s+=(a[i]-ma)*(b[i]-mb); return s/(a.length-1); }}
+function rets(c) {{ const r=[]; for(let i=1;i<c.length;i++) r.push(c[i]/c[i-1]-1); return r; }}
+
+function readWeights() {{
+  const w = {{}}; let total = 0;
+  document.querySelectorAll('.winput').forEach(el => {{
+    const v = Math.max(0, parseFloat(el.value) || 0); w[el.dataset.sym] = v; total += v;
+  }});
+  if (total <= 0) return null;
+  Object.keys(w).forEach(k => w[k] /= total);
+  return w;
+}}
+
+function recompute() {{
+  const w = readWeights();
+  const syms = DATA.symbols;
+  document.getElementById('wsum').textContent =
+    w ? 'Σ = 1.00 (normalised)' : 'Enter at least one positive weight.';
+  if (!w) {{ Plotly.purge('cum'); Plotly.purge('risk'); document.getElementById('stats').innerHTML=''; return; }}
+
+  const R = syms.map(s => rets(DATA.series[s].close));   // per-symbol return arrays
+  const wv = syms.map(s => w[s]);
+  const n = R[0].length;
+
+  // Blended return series + cumulative
+  const blended = [];
+  for (let t=0;t<n;t++) blended.push(syms.reduce((acc,s,i)=>acc + wv[i]*R[i][t], 0));
+  let cum = 1; const cumY = blended.map(r => {{ cum *= (1+r); return (cum-1)*100; }});
+  const dates = DATA.dates.slice(1);
+
+  Plotly.react('cum', [{{x:dates, y:cumY.map(v=>+v.toFixed(2)), mode:'lines',
+    name:'Portfolio', line:{{color:'#58a6ff', width:2}}, fill:'tozeroy',
+    fillcolor:'rgba(88,166,255,0.1)'}}], Object.assign({{}},LAYOUT_BASE,{{
+    xaxis:Object.assign({{}},AXIS), yaxis:Object.assign({{title:'Return (%)'}},AXIS)}}), PLOT_CFG);
+
+  // Covariance-based contribution to risk: contrib_i = w_i * (Σw)_i ; Σ contrib = var
+  const Sw = syms.map((_,i)=> syms.reduce((acc,_2,j)=> acc + cov(R[i],R[j])*wv[j], 0));
+  const contrib = wv.map((wi,i)=> wi*Sw[i]);
+  const variance = contrib.reduce((a,b)=>a+b,0);
+  const pct = contrib.map(c => variance>0 ? c/variance*100 : 0);
+
+  Plotly.react('risk', [{{x:syms, y:pct.map(v=>+v.toFixed(1)), type:'bar',
+    marker:{{color:syms.map((_,i)=>COLORS[i%COLORS.length])}},
+    text:pct.map(v=>v.toFixed(0)+'%'), textposition:'outside'}}],
+    Object.assign({{}},LAYOUT_BASE,{{xaxis:Object.assign({{}},AXIS),
+    yaxis:Object.assign({{title:'% of portfolio variance'}},AXIS)}}), PLOT_CFG);
+
+  // Stats
+  const vol = std(blended)*ANN*100;
+  const sharpe = std(blended)===0 ? NaN : mean(blended)/std(blended)*ANN;
+  const periodRet = cumY[cumY.length-1];
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="lbl">Period Return</div><div class="val" style="color:${{periodRet>=0?'var(--green)':'var(--red)'}}">${{periodRet>=0?'+':''}}${{periodRet.toFixed(1)}}%</div></div>
+    <div class="stat"><div class="lbl">Ann. Volatility</div><div class="val">${{vol.toFixed(1)}}%</div></div>
+    <div class="stat"><div class="lbl">Sharpe</div><div class="val">${{isNaN(sharpe)?'—':sharpe.toFixed(2)}}</div></div>
+    <div class="stat"><div class="lbl">Holdings</div><div class="val">${{syms.length}}</div></div>`;
+}}
+
+recompute();
+window.addEventListener('resize', () => {{ ['cum','risk'].forEach(id=>{{try{{Plotly.Plots.resize(id);}}catch(e){{}}}}); }});
+</script>
+</body>
+</html>"""
+
+
+def run_portfolio(args):
+    """Fetch the weighted symbols and write the interactive portfolio page."""
+    try:
+        weights = parse_weights(args.portfolio)
+    except ValueError as e:
+        print(f"\n❌ Invalid --portfolio: {e}")
+        sys.exit(1)
+    try:
+        history_kwargs, period_label = parse_period(args.period)
+    except ValueError as e:
+        print(f"\n❌ Invalid --period: {e}")
+        sys.exit(1)
+
+    output_file = args.output or "portfolio.html"
+    print(f"\n{'═'*62}")
+    print(f"  COLCAP Portfolio — {len(weights)} holdings")
+    print(f"  Weights  : {', '.join(f'{s} {w:.0%}' for s, w in weights.items())}")
+    print(f"  Period   : {args.period} ({period_label})  |  Interval: {args.interval}")
+    print(f"  Output   : {output_file}")
+    print(f"{'═'*62}\n")
+
+    companies = {bvc: meta["company"] for bvc, meta in BVC_SYMBOLS.items()}
+    cols = {}
+    for sym in weights:
+        meta = BVC_SYMBOLS.get(sym, {"yahoo": f"{sym}.CL"})
+        _, df = resolve_history(sym, meta, history_kwargs, args.interval,
+                                use_cache=not args.no_cache, max_age_min=args.cache_ttl)
+        if df is not None and not df.empty and "Close" in df.columns:
+            s = df["Close"]
+            if s.index.tz is not None:
+                s.index = s.index.tz_localize(None)
+            cols[sym] = s
+            print(f"  ✅ {sym}")
+        else:
+            print(f"  ⚠️  {sym}: no data — excluded")
+
+    if not cols:
+        print("\n❌ No price data for any holding.")
+        sys.exit(1)
+
+    closes = pd.DataFrame(cols).sort_index()
+    payload = build_portfolio_payload(closes, weights, companies)
+    html_content = build_portfolio_html(payload, period_label, args.interval)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"\n✅ Portfolio page saved: {output_file}  "
+          f"({len(payload['symbols'])} holdings, {len(payload['dates'])} common bars)")
+    print(f"\n  Open in browser: file://{os.path.abspath(output_file)}\n")
+
+
+# ══════════════════════════════════════════════════════════════════
 # PERIOD PARSING
 # ══════════════════════════════════════════════════════════════════
 
@@ -2541,6 +2787,10 @@ def main():
         help="Scan all COLCAP symbols for signals and write the alerts digest"
     )
     parser.add_argument(
+        "--portfolio", default=None, metavar="SPEC",
+        help='Portfolio page from weighted symbols, e.g. "GRUPOSURA:0.4,ECOPETROL:0.6"'
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="Bypass the local price cache (always fetch fresh from Yahoo)"
     )
@@ -2562,6 +2812,11 @@ def main():
     # ── Alerts mode: scan all symbols for signals and exit ──
     if args.alerts:
         run_alerts(args)
+        return
+
+    # ── Portfolio mode: build the weighted-portfolio page and exit ──
+    if args.portfolio:
+        run_portfolio(args)
         return
 
     # ── Resolve symbol ──────────────────────────────────────────
