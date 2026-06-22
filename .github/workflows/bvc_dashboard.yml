@@ -142,6 +142,12 @@ jobs:
             --interval "$INPUT_INTERVAL" \
             --output   compare.html
 
+          # Refresh the COLCAP alerts digest (signal scan across all symbols).
+          python sura_tracker.py --alerts \
+            --period   "$INPUT_PERIOD"   \
+            --interval "$INPUT_INTERVAL" \
+            --output   alerts.html
+
           echo "output_file=$OUTPUT" >> "$GITHUB_OUTPUT"
           echo "generated_at=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
 
@@ -151,6 +157,7 @@ jobs:
           mkdir -p public
           cp "${{ steps.build.outputs.output_file }}" public/
           [ -f compare.html ] && cp compare.html public/
+          [ -f alerts.html ] && cp alerts.html public/
 
           # Fetch previous dashboards from gh-pages branch (accumulate across runs)
           git fetch origin gh-pages 2>/dev/null || true
@@ -162,11 +169,12 @@ jobs:
           fi
 
           # Build index page listing all dashboards
-          ALL_FILES=$(ls public/*.html 2>/dev/null | xargs -n1 basename | grep -v '^index' | grep -v '^compare' | sort -u)
+          ALL_FILES=$(ls public/*.html 2>/dev/null | xargs -n1 basename | grep -v '^index' | grep -v '^compare' | grep -v '^alerts' | sort -u)
 
-          # Featured COLCAP Compare link (only if the page exists)
+          # Featured links (only if the pages exist)
           FEATURED=""
-          [ -f public/compare.html ] && FEATURED='<a class="featured" href="compare.html">📊 COLCAP Compare — all symbols side by side</a>'
+          [ -f public/compare.html ] && FEATURED="${FEATURED}"'<a class="featured" href="compare.html">📊 COLCAP Compare — all symbols side by side</a>'
+          [ -f public/alerts.html ] && FEATURED="${FEATURED}"'<a class="featured" href="alerts.html">🔔 COLCAP Alerts — signal scan</a>'
 
           ITEMS=""
           while IFS= read -r f; do

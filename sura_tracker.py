@@ -2230,6 +2230,126 @@ window.addEventListener('resize', () => {{
 
 
 # ══════════════════════════════════════════════════════════════════
+# ALERTS DIGEST  (signal scan across all COLCAP symbols)
+# ══════════════════════════════════════════════════════════════════
+
+def generate_alerts(df: pd.DataFrame, label: str = "STOCK") -> list:
+    """
+    Scan a price+indicator frame for notable signals on the latest bar.
+
+    Returns a list of (kind, direction, message) where direction is one of
+    'bullish' | 'bearish'. Empty list when nothing fires or data is too short.
+    """
+    alerts = []
+    if df is None or df.empty or len(df) < 2:
+        return alerts
+    last, prev = df.iloc[-1], df.iloc[-2]
+
+    rsi = last.get("RSI")
+    if pd.notna(rsi):
+        if rsi > 70:
+            alerts.append(("RSI", "bearish", f"Overbought · RSI {rsi:.0f}"))
+        elif rsi < 30:
+            alerts.append(("RSI", "bullish", f"Oversold · RSI {rsi:.0f}"))
+
+    if pd.notna(last.get("MACD")) and pd.notna(prev.get("MACD")):
+        d_now  = last["MACD"] - last["Signal"]
+        d_prev = prev["MACD"] - prev["Signal"]
+        if d_prev <= 0 < d_now:
+            alerts.append(("MACD", "bullish", "MACD crossed above signal"))
+        elif d_prev >= 0 > d_now:
+            alerts.append(("MACD", "bearish", "MACD crossed below signal"))
+
+    win = df["Close"].tail(252) if len(df) >= 252 else df["Close"]
+    if last["Close"] >= win.max():
+        alerts.append(("Range", "bullish", "New 52-week high"))
+    elif last["Close"] <= win.min():
+        alerts.append(("Range", "bearish", "New 52-week low"))
+
+    smas = [last.get("SMA_50"), last.get("SMA_200"),
+            prev.get("SMA_50"), prev.get("SMA_200")]
+    if all(pd.notna(x) for x in smas):
+        if prev["SMA_50"] <= prev["SMA_200"] and last["SMA_50"] > last["SMA_200"]:
+            alerts.append(("Cross", "bullish", "Golden cross · SMA50 > SMA200"))
+        elif prev["SMA_50"] >= prev["SMA_200"] and last["SMA_50"] < last["SMA_200"]:
+            alerts.append(("Cross", "bearish", "Death cross · SMA50 < SMA200"))
+
+    return alerts
+
+
+def build_alerts_html(results: list, period_label: str, interval: str) -> str:
+    """
+    Build the alerts-digest page from results: list of
+    (bvc, company, last_close, [(kind, direction, message), …]).
+    """
+    interval_lbl = "Weekly" if interval == "1wk" else "Daily"
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    n_signals = sum(len(a) for _, _, _, a in results)
+
+    if not results:
+        body = ('<div class="empty">No signals across COLCAP right now. '
+                'Check back next run.</div>')
+    else:
+        cards = ""
+        for bvc, company, last_close, alerts in results:
+            chips = "".join(
+                f'<span class="alert-chip {direction}">'
+                f'{"▲" if direction=="bullish" else "▼"} {html_lib.escape(kind)}: '
+                f'{html_lib.escape(msg)}</span>'
+                for kind, direction, msg in alerts
+            )
+            cards += (
+                f'<div class="alert-card">'
+                f'<div class="alert-head"><span class="alert-sym">{bvc}</span>'
+                f'<span class="alert-price">{CURRENCY} {last_close:,.0f}</span></div>'
+                f'<div class="alert-co">{html_lib.escape(company)}</div>'
+                f'<div class="alert-chips">{chips}</div></div>'
+            )
+        body = f'<div class="alert-grid">{cards}</div>'
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COLCAP Alerts — {EXCHANGE}</title>
+  <style>
+    :root {{ --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+      --text:#e6edf3;--text2:#8b949e;--green:#3fb950;--red:#f85149;--radius:8px; }}
+    *{{box-sizing:border-box;margin:0;padding:0;}}
+    body{{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;}}
+    .header{{background:var(--bg2);border-bottom:1px solid var(--border);padding:18px 24px;}}
+    .header h1{{font-size:20px;}} .header p{{color:var(--text2);font-size:12px;margin-top:4px;}}
+    .section{{padding:20px 24px;}}
+    .alert-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;}}
+    .alert-card{{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}}
+    .alert-head{{display:flex;justify-content:space-between;align-items:baseline;}}
+    .alert-sym{{font-size:15px;font-weight:700;color:#58a6ff;}}
+    .alert-price{{font-size:13px;color:var(--text2);}}
+    .alert-co{{font-size:12px;color:var(--text2);margin:2px 0 10px;}}
+    .alert-chips{{display:flex;flex-direction:column;gap:6px;}}
+    .alert-chip{{font-size:12px;padding:5px 10px;border-radius:6px;font-weight:600;}}
+    .alert-chip.bullish{{background:rgba(63,185,80,0.15);color:var(--green);}}
+    .alert-chip.bearish{{background:rgba(248,81,73,0.15);color:var(--red);}}
+    .empty{{text-align:center;color:var(--text2);padding:60px;}}
+    footer{{border-top:1px solid var(--border);padding:16px 24px;color:var(--text2);font-size:11px;text-align:center;}}
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>🔔 COLCAP Alerts</h1>
+  <p>{EXCHANGE} · Colombia · {interval_lbl} · {period_label} · {n_signals} signal(s) across {len(results)} symbol(s)</p>
+</div>
+<div class="section">{body}</div>
+<footer>
+  Generated by <strong>sura_tracker.py --alerts</strong> on {generated} ·
+  Signals are mechanical (RSI, MACD, 52-wk range, SMA cross) — verify before acting.
+</footer>
+</body>
+</html>"""
+
+
+# ══════════════════════════════════════════════════════════════════
 # PERIOD PARSING
 # ══════════════════════════════════════════════════════════════════
 
@@ -2325,6 +2445,42 @@ def run_compare(args):
     print(f"\n  Open in browser: file://{os.path.abspath(output_file)}\n")
 
 
+def run_alerts(args):
+    """Scan every COLCAP symbol for signals and write the alerts-digest page."""
+    try:
+        history_kwargs, period_label = parse_period(args.period)
+    except ValueError as e:
+        print(f"\n❌ Invalid --period: {e}")
+        sys.exit(1)
+
+    output_file = args.output or "alerts.html"
+    print(f"\n{'═'*62}")
+    print(f"  COLCAP Alerts — scanning {len(BVC_SYMBOLS)} symbols")
+    print(f"  Period   : {args.period} ({period_label})  |  Interval: {args.interval}")
+    print(f"  Output   : {output_file}")
+    print(f"{'═'*62}\n")
+
+    results = []
+    for bvc, meta in BVC_SYMBOLS.items():
+        _, df = resolve_history(bvc, meta, history_kwargs, args.interval,
+                                use_cache=not args.no_cache, max_age_min=args.cache_ttl)
+        if df is None or df.empty:
+            continue
+        df = calc_indicators(df, interval=args.interval)
+        alerts = generate_alerts(df, bvc)
+        if alerts:
+            results.append((bvc, meta["company"], df["Close"].iloc[-1], alerts))
+            print(f"  🔔 {bvc}: {len(alerts)} signal(s)")
+
+    html_content = build_alerts_html(results, period_label, args.interval)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    n_signals = sum(len(a) for _, _, _, a in results)
+    print(f"\n✅ Alerts page saved: {output_file}  "
+          f"({n_signals} signal(s), {len(results)} symbol(s))")
+    print(f"\n  Open in browser: file://{os.path.abspath(output_file)}\n")
+
+
 def main():
     # Build the list of available symbols for the help text
     sym_list = "  ".join(sorted(BVC_SYMBOLS.keys()))
@@ -2381,6 +2537,10 @@ def main():
         help="Generate the interactive COLCAP comparison page (all symbols)"
     )
     parser.add_argument(
+        "--alerts", action="store_true",
+        help="Scan all COLCAP symbols for signals and write the alerts digest"
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="Bypass the local price cache (always fetch fresh from Yahoo)"
     )
@@ -2397,6 +2557,11 @@ def main():
     # ── Compare mode: build the all-symbols comparison page and exit ──
     if args.compare:
         run_compare(args)
+        return
+
+    # ── Alerts mode: scan all symbols for signals and exit ──
+    if args.alerts:
+        run_alerts(args)
         return
 
     # ── Resolve symbol ──────────────────────────────────────────
