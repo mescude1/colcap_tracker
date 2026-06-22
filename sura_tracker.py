@@ -956,6 +956,73 @@ def build_yahoo_fund_tab(fund: dict, ticker_bvc: str, ticker_yf: str, currency: 
   </div>"""
 
 
+# ── Dividends & corporate actions (Yahoo, best-effort) ──────────────
+
+def fetch_actions(stock) -> dict:
+    """
+    Normalize a ticker's dividend and split history into plain lists.
+
+    Returns {"dividends": [(date, per_share), …], "splits": [(date, ratio), …]}.
+    Tolerant of missing data / errors — returns empty lists rather than raising.
+    """
+    out = {"dividends": [], "splits": []}
+    for attr, key in (("dividends", "dividends"), ("splits", "splits")):
+        try:
+            series = getattr(stock, attr)
+        except Exception:
+            series = None
+        if series is not None and len(series):
+            for ts, v in series.items():
+                try:
+                    out[key].append((pd.Timestamp(ts).strftime("%Y-%m-%d"), float(v)))
+                except Exception:
+                    continue
+    return out
+
+
+def fig_div_history(dividends, currency="COP"):
+    dates = [d for d, _ in dividends]
+    vals  = [v for _, v in dividends]
+    fig = go.Figure(go.Bar(x=dates, y=vals, marker_color=GREEN, name="Dividend",
+        text=[f"{v:,.0f}" for v in vals], textposition="outside"))
+    fig.update_layout(**_layout(
+        title=dict(text=f"Dividend per Share ({currency})", font=dict(size=13, color=TEXT2)),
+        yaxis=dict(title=f"{currency} / share"),
+        height=300, margin=dict(l=60, r=20, t=30, b=40),
+    ))
+    return fig
+
+
+def build_dividends_tab(actions: dict, currency: str = "COP") -> str:
+    """Dividends-tab HTML: dividend-history chart + recent dividends & splits tables."""
+    divs   = actions.get("dividends", [])
+    splits = actions.get("splits", [])
+    if not divs and not splits:
+        return ('<div style="text-align:center;padding:60px 20px;color:var(--text2);">'
+                '<div style="font-size:48px;margin-bottom:16px;">💰</div>'
+                '<div style="font-size:16px;font-weight:600;color:var(--text);">'
+                'No dividend or split history on Yahoo Finance for this ticker.</div></div>')
+
+    title = ('<div style="font-size:13px;font-weight:600;color:var(--text2);'
+             'margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;">')
+    parts = []
+    if divs:
+        parts.append(f'<div class="chart-card">'
+                     f'{fig_to_div(fig_div_history(divs, currency), "chart-divhist")}</div>')
+        rows = "".join(f"<tr><td>{d}</td><td>{currency} {v:,.2f}</td></tr>"
+                       for d, v in reversed(divs[-12:]))
+        parts.append(f'<div class="chart-card">{title}Recent Dividends</div>'
+                     f'<table class="fund-table"><thead><tr><th>Ex-Date</th>'
+                     f'<th>Per Share</th></tr></thead><tbody>{rows}</tbody></table></div>')
+    if splits:
+        rows = "".join(f"<tr><td>{d}</td><td>{v:g} : 1</td></tr>"
+                       for d, v in reversed(splits))
+        parts.append(f'<div class="chart-card">{title}Stock Splits</div>'
+                     f'<table class="fund-table"><thead><tr><th>Date</th>'
+                     f'<th>Ratio</th></tr></thead><tbody>{rows}</tbody></table></div>')
+    return "".join(parts)
+
+
 # ══════════════════════════════════════════════════════════════════
 # NEWS — CUSTOM SOURCE LOADER
 # ══════════════════════════════════════════════════════════════════
@@ -1363,7 +1430,7 @@ function exportTable(tbl, base, fmt) {
 def build_html(df: pd.DataFrame, info: dict, period: str,
                interval: str = "1d", news_items: list = None,
                sym: dict = None, fundamentals: dict = None,
-               benchmark: dict = None) -> str:
+               benchmark: dict = None, actions: dict = None) -> str:
     """
     Build a fully self-contained HTML dashboard.
 
@@ -1550,6 +1617,9 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
     </div>
   </div>"""
 
+    # ── Dividends / corporate-actions tab ────────────────────────
+    dividends_html = build_dividends_tab(actions or {}, currency)
+
     # ── Export data (CSV/JSON download) ──────────────────────────
     export_json = json.dumps(export_payload(df)).replace("</", "<\\/")
     export_base = f"{ticker_bvc.lower()}_{interval}"
@@ -1731,6 +1801,7 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
   <button class="tab-btn active" onclick="switchTab(this,'technical')">📈 Technical Analysis</button>
   <button class="tab-btn" onclick="switchTab(this,'returns')">📊 Returns &amp; Risk</button>
   <button class="tab-btn" onclick="switchTab(this,'fundamentals')">🏦 Fundamentals</button>
+  <button class="tab-btn" onclick="switchTab(this,'dividends')">💰 Dividends</button>
   <button class="tab-btn" onclick="switchTab(this,'news')">📰 News &amp; Sentiment</button>
 </div>
 
@@ -1754,6 +1825,10 @@ def build_html(df: pd.DataFrame, info: dict, period: str,
 
 <div id="tab-fundamentals" class="tab-pane">
   {fund_tab_html}
+</div>
+
+<div id="tab-dividends" class="tab-pane">
+  {dividends_html}
 </div>
 
 <div id="tab-news" class="tab-pane">
@@ -2355,6 +2430,11 @@ def main():
         else:
             print("  ℹ️  COLCAP benchmark unavailable — skipping beta/excess.")
 
+    # ── Dividends & corporate actions ────────────────────────────
+    print("💰 Fetching dividends & splits…")
+    actions = fetch_actions(stock)
+    print(f"  ✅ {len(actions['dividends'])} dividend(s), {len(actions['splits'])} split(s).")
+
     # ── News ────────────────────────────────────────────────────
     news_items = []
     if not args.no_news:
@@ -2369,7 +2449,7 @@ def main():
                               interval=args.interval,
                               news_items=news_items,
                               sym=sym, fundamentals=fundamentals,
-                              benchmark=benchmark)
+                              benchmark=benchmark, actions=actions)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html_content)
