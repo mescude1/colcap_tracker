@@ -77,7 +77,8 @@ import plotly.io as pio
 
 # Pure building blocks extracted into the bvc package, re-exported here so the
 # public API (sura_tracker.X) and the CLI entry point stay unchanged.
-from bvc import indicators, period, sentiment  # noqa: F401
+from bvc import indicators, period, sentiment, signals as signals_mod  # noqa: F401
+from bvc.signals import evaluate_signals, signal_verdict  # noqa: F401
 from bvc.indicators import (  # noqa: F401
     calc_rsi, calc_macd, calc_bollinger, calc_atr, calc_drawdown,
     ann_factor_for, sharpe_ratio, sortino_ratio, max_drawdown,
@@ -2220,33 +2221,48 @@ def generate_alerts(df: pd.DataFrame, label: str = "STOCK") -> list:
     return alerts
 
 
+VERDICT_COLORS = {"bullish": "#3fb950", "bearish": "#f85149", "neutral": "#8b949e"}
+
+
 def build_alerts_html(results: list, period_label: str, interval: str) -> str:
     """
-    Build the alerts-digest page from results: list of
-    (bvc, company, last_close, [(kind, direction, message), …]).
+    Build the alerts/verdict board from results: list of
+    (bvc, company, last_close, currency, verdict, events) where verdict is the
+    dict from signal_verdict() and events is [(kind, direction, message), …].
+    Sorted by conviction (verdict score) — strong buys first, strong sells last.
     """
     interval_lbl = "Weekly" if interval == "1wk" else "Daily"
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
-    n_signals = sum(len(a) for _, _, _, a in results)
+    results = sorted(results, key=lambda r: r[4]["score"], reverse=True)
+    n_buy  = sum(1 for r in results if r[4]["state"] == "bullish")
+    n_sell = sum(1 for r in results if r[4]["state"] == "bearish")
 
     if not results:
-        body = ('<div class="empty">No signals across COLCAP right now. '
+        body = ('<div class="empty">No symbols with data right now. '
                 'Check back next run.</div>')
     else:
         cards = ""
-        for bvc, company, last_close, alerts in results:
+        for bvc, company, last_close, currency, verdict, events in results:
+            color = VERDICT_COLORS.get(verdict["state"], "#8b949e")
             chips = "".join(
                 f'<span class="alert-chip {direction}">'
                 f'{"▲" if direction=="bullish" else "▼"} {html_lib.escape(kind)}: '
                 f'{html_lib.escape(msg)}</span>'
-                for kind, direction, msg in alerts
+                for kind, direction, msg in events
             )
+            chips_html = (f'<div class="alert-chips">{chips}</div>'
+                          if events else
+                          '<div class="alert-none">No new events this bar</div>')
             cards += (
-                f'<div class="alert-card">'
+                f'<div class="alert-card" style="border-left:4px solid {color};">'
                 f'<div class="alert-head"><span class="alert-sym">{bvc}</span>'
-                f'<span class="alert-price">{CURRENCY} {last_close:,.0f}</span></div>'
+                f'<span class="alert-price">{currency} {last_close:,.0f}</span></div>'
                 f'<div class="alert-co">{html_lib.escape(company)}</div>'
-                f'<div class="alert-chips">{chips}</div></div>'
+                f'<div class="verdict" style="background:{color};">{verdict["label"]}'
+                f'<span class="vscore">score {verdict["score"]:+d}</span></div>'
+                f'<div class="vcount">▲ {verdict["bull"]} bullish · ▼ {verdict["bear"]} bearish '
+                f'· — {verdict["neutral"]} neutral</div>'
+                f'{chips_html}</div>'
             )
         body = f'<div class="alert-grid">{cards}</div>'
 
@@ -2270,23 +2286,29 @@ def build_alerts_html(results: list, period_label: str, interval: str) -> str:
     .alert-sym{{font-size:15px;font-weight:700;color:#58a6ff;}}
     .alert-price{{font-size:13px;color:var(--text2);}}
     .alert-co{{font-size:12px;color:var(--text2);margin:2px 0 10px;}}
+    .verdict{{display:flex;justify-content:space-between;align-items:center;color:#0d1117;
+      font-weight:800;font-size:14px;letter-spacing:.5px;padding:8px 12px;border-radius:6px;margin-bottom:8px;}}
+    .vscore{{font-size:11px;font-weight:700;opacity:.85;}}
+    .vcount{{font-size:11px;color:var(--text2);margin-bottom:10px;}}
     .alert-chips{{display:flex;flex-direction:column;gap:6px;}}
     .alert-chip{{font-size:12px;padding:5px 10px;border-radius:6px;font-weight:600;}}
     .alert-chip.bullish{{background:rgba(63,185,80,0.15);color:var(--green);}}
     .alert-chip.bearish{{background:rgba(248,81,73,0.15);color:var(--red);}}
+    .alert-none{{font-size:11px;color:var(--text2);font-style:italic;}}
     .empty{{text-align:center;color:var(--text2);padding:60px;}}
     footer{{border-top:1px solid var(--border);padding:16px 24px;color:var(--text2);font-size:11px;text-align:center;}}
   </style>
 </head>
 <body>
 <div class="header">
-  <h1>🔔 COLCAP Alerts</h1>
-  <p>{EXCHANGE} · Colombia · {interval_lbl} · {period_label} · {n_signals} signal(s) across {len(results)} symbol(s)</p>
+  <h1>🔔 COLCAP Signals — Buy / Sell Board</h1>
+  <p>{EXCHANGE} · Colombia · {interval_lbl} · {period_label} · {len(results)} symbols ·
+     🟢 {n_buy} leaning buy · 🔴 {n_sell} leaning sell</p>
 </div>
 <div class="section">{body}</div>
 <footer>
   Generated by <strong>sura_tracker.py --alerts</strong> on {generated} ·
-  Signals are mechanical (RSI, MACD, 52-wk range, SMA cross) — verify before acting.
+  Verdicts are mechanical (trend, RSI, MACD, Bollinger, momentum) — verify before acting.
 </footer>
 </body>
 </html>"""
@@ -2608,17 +2630,21 @@ def run_alerts(args):
         if df is None or df.empty:
             continue
         df = calc_indicators(df, interval=args.interval)
-        alerts = generate_alerts(df, bvc)
-        if alerts:
-            results.append((bvc, meta["company"], df["Close"].iloc[-1], alerts))
-            print(f"  🔔 {bvc}: {len(alerts)} signal(s)")
+        verdict = signal_verdict(evaluate_signals(df))
+        events  = generate_alerts(df, bvc)
+        currency = meta.get("currency", CURRENCY)
+        results.append((bvc, meta["company"], df["Close"].iloc[-1],
+                        currency, verdict, events))
+        print(f"  {bvc}: {verdict['label']} (score {verdict['score']:+d}, "
+              f"{len(events)} event(s))")
 
     html_content = build_alerts_html(results, period_label, args.interval)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html_content)
-    n_signals = sum(len(a) for _, _, _, a in results)
+    n_buy  = sum(1 for r in results if r[4]["state"] == "bullish")
+    n_sell = sum(1 for r in results if r[4]["state"] == "bearish")
     print(f"\n✅ Alerts page saved: {output_file}  "
-          f"({n_signals} signal(s), {len(results)} symbol(s))")
+          f"({len(results)} symbols · {n_buy} buy / {n_sell} sell)")
     print(f"\n  Open in browser: file://{os.path.abspath(output_file)}\n")
 
 

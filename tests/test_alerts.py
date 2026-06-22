@@ -38,15 +38,28 @@ def test_new_high_fires():
 
 def test_build_alerts_html_empty_state():
     html = st.build_alerts_html([], "2 Years", "1d")
-    assert "No signals across COLCAP" in html
+    assert "No symbols with data" in html
     assert html.startswith("<!DOCTYPE html>")
 
 
-def test_build_alerts_html_renders_cards():
-    results = [("GRUPOSURA", "Grupo SURA", 33000.0,
-                [("RSI", "bullish", "Oversold · RSI 25"),
-                 ("MACD", "bearish", "MACD crossed below signal")])]
+def _verdict(label="BUY", state="bullish", score=2, bull=3, bear=1, neutral=1):
+    return {"label": label, "state": state, "score": score,
+            "bull": bull, "bear": bear, "neutral": neutral, "total": bull+bear+neutral}
+
+
+def test_build_alerts_html_renders_verdict_and_events():
+    results = [("GRUPOSURA", "Grupo SURA", 33000.0, "COP", _verdict(),
+                [("RSI", "bullish", "Oversold · RSI 25")])]
     html = st.build_alerts_html(results, "2 Years", "1d")
     assert "GRUPOSURA" in html
+    assert "BUY" in html and "score +2" in html
     assert "Oversold · RSI 25" in html
-    assert "alert-chip bullish" in html and "alert-chip bearish" in html
+
+
+def test_build_alerts_html_sorts_by_score():
+    results = [
+        ("SELLER", "S", 100.0, "COP", _verdict("STRONG SELL", "bearish", -4, 0, 5, 2), []),
+        ("BUYER",  "B", 100.0, "COP", _verdict("STRONG BUY", "bullish", 5, 6, 1, 0), []),
+    ]
+    html = st.build_alerts_html(results, "2 Years", "1d")
+    assert html.index("BUYER") < html.index("SELLER")   # strongest buy first
