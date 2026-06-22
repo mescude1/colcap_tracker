@@ -20,7 +20,7 @@ resumes from the **Status checklist** below — find the first unchecked box.
 ## Status checklist — Round 2 (registry + signals + sidebar)
 - [x] Phase 10 — Expand COLCAP registry (14 → 33 Yahoo-verified symbols; per-symbol currency; BANCOLOMBIA via CIB USD ADR)
 - [x] Phase 11 — Signals engine + BUY/SELL verdict (bvc/signals.py); wired into alerts page
-- [ ] Phase 12 — Signals sidebar on the per-symbol dashboard
+- [x] Phase 12 — Signals sidebar on the per-symbol dashboard
 
 ## Status checklist — Round 1
 - [x] Phase 1 — Fetch resilience, caching & resume

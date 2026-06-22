@@ -114,9 +114,9 @@ Symbols with no Yahoo Finance data for the chosen period are skipped automatical
 
 ## 🔔 Alerts & 📦 Portfolio
 
-- **`--alerts`** scans every COLCAP symbol for mechanical signals (RSI overbought/
-  oversold, MACD crossovers, 52-week highs/lows, golden/death cross) and writes a
-  one-page digest. Wired into the hourly workflow.
+- **`--alerts`** scans every COLCAP symbol and writes a **Buy/Sell board**: each
+  symbol gets a **BUY / SELL / HOLD verdict** (from trend, RSI, MACD, Bollinger and
+  momentum) plus any fresh events, sorted by conviction. Wired into the hourly workflow.
 - **`--portfolio "SYM:weight,…"`** builds an interactive page where you edit weights
   in the browser and see blended cumulative return, annualised volatility, Sharpe,
   and covariance-based **contribution-to-risk** recompute live.
@@ -126,7 +126,9 @@ Symbols with no Yahoo Finance data for the chosen period are skipped automatical
 Each dashboard includes candlesticks + Bollinger/MAs, volume, RSI, MACD, **ATR(14)**,
 cumulative returns (with a **COLCAP benchmark overlay** + **beta** / excess-return
 cards), **drawdown-from-peak**, return distribution, rolling volatility and a monthly
-heatmap. Header metric cards include **Sharpe ratio** and **max drawdown**. There are
+heatmap. A sticky **signals sidebar** shows a **BUY/SELL verdict** with the per-signal
+posture (trend, RSI, MACD, Bollinger, momentum). Header metric cards include
+**Sharpe ratio** and **max drawdown**. There are
 **Fundamentals** and **Dividends** tabs pulled live from Yahoo Finance (GRUPOSURA keeps
 its hand-curated FY2022–2024 data), and a **CSV/JSON export** button.
 
@@ -145,7 +147,7 @@ Pure building blocks live in the **`bvc/`** package (`indicators`, `period`,
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                 # 104 offline unit + functional tests, no network needed
+pytest                 # 115 offline unit + functional tests, no network needed
 ```
 
 ---

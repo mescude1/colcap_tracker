@@ -25,6 +25,11 @@ def test_build_html_self_contained(df_with_indicators):
     # Phase 1 metric cards
     assert "Sharpe Ratio" in html
     assert "Max Drawdown" in html
+    # Signals sidebar with a BUY/SELL verdict
+    assert 'class="sidebar"' in html
+    assert "Signal Summary" in html
+    assert "verdict-badge" in html
+    assert any(v in html for v in ("STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL"))
     # Loads Plotly from CDN (github-pages friendly, no bundling)
     assert "cdn.plot.ly" in html
     # Company metadata surfaced
